@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Türkiye'nin sekiz şehrinde toplu taşıma ağı tasarla ve işlet.">
     <meta name="theme-color" content="#18282a">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icon.svg" type="image/svg+xml">
     <title>Hat Atölyesi</title>
   </head>
   <body>
@@ -56,6 +58,7 @@
               <label><input id="heat" type="checkbox"> Doluluk</label>
               <label><input id="walk" type="checkbox"> Kapsama</label>
               <label title="Yaklaşık mevcut güzergâh şablonları"><input id="reference" type="checkbox"> Referans hatlar</label>
+              <label><input id="flow" type="checkbox"> Yolcu akışı</label>
               <button id="recenter" type="button" aria-label="Haritayı merkezle"><svg class="icon" aria-hidden="true"><use href="#i-map"/></svg></button>
             </div>
             <div id="map-banner" role="status" hidden></div>
@@ -66,6 +69,7 @@
               <button type="button" data-tab="lines"><svg class="icon" aria-hidden="true"><use href="#i-lines"/></svg> Hatlar</button>
               <button type="button" data-tab="goals"><svg class="icon" aria-hidden="true"><use href="#i-goals"/></svg> Hedefler</button>
               <button type="button" data-tab="finance"><svg class="icon" aria-hidden="true"><use href="#i-finance"/></svg> Maliye</button>
+              <button type="button" data-tab="management"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg> Yönetim</button>
             </nav>
             <div id="panel"></div>
           </aside>

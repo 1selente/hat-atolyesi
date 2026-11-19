@@ -22,14 +22,25 @@ Vite'ın terminalde gösterdiği adresi aç. `npm test` simülasyon testlerini �
 5. Araç modeli, normal ve pik sefer aralıklarını ayarla. Hat panelindeki saatlik doluluk grafiği ve harita katmanlarıyla ağı geliştir. Referans hatlar sadece yaklaşık güzergâhları gösterir; oyun ekonomisine dahil değildir. Duraklara tıklayarak istasyon bilgilerini, mağaza ve durak işlemlerini gör.
 6. Ayarlardan gece teması ve renk körü dostu çizgileri seç. Boşluk ile duraklat, 1–4 ile hızı ayarla, N/D ile hat/depo planla, Esc ile iptal et ve Shift+G ile günü bitir.
 
-Her şehir ayrı otomatik kaydedilir. Kayıt menüsü JSON dışa ve içe aktarımını destekler. Bir dosya açmak o şehrin yerel kaydını günceller. Eski v1 kayıtları içe aktarım veya normal açılış sırasında sürüm 2'ye yükseltilir.
+Her şehir ayrı otomatik kaydedilir. Kayıt menüsü JSON dışa/içe aktarımı, manuel yuva, kopyalama ve önceki gün yedeğini destekler. Bir dosya açmak o şehrin yerel kaydını günceller. Eski v1/v2 kayıtları otomatik olarak sürüm 3'e yükseltilir.
+
+## Sürüm 3: Ulaşım imparatorluğu
+
+- **Hat mühendisliği:** ara güzergâh noktaları, kıvrımların süre ve maliyet etkisi, ringler, ortak koridordan dallanma, ekspres durak seçimi, geçici kapalı duraklar, tek/çift ray, karşılaşma cepleri, sinyalizasyon, yapı türleri ve inşaat aşamaları. Hat panelindeki gelişmiş ayarları aç.
+- **Filo ve tesisler:** peron uzunluğu, vagon sayısı, araç kondisyonu/yıpranma, yedek filo, bakım, arıza onarımı, üretici ve ikinci el siparişleri, teslim süresi, depo kapasite geliştirmeleri, reklam, turnike ve erişilebilirlik.
+- **Yönetim:** şirket adı ve rengi, personel, finansman ve tahvil, belediye sözleşmeleri, bilet tarifeleri, abonman ve aktarma indirimi, ulaşım politikası, gelir/gider ayrıntıları, günlük muhasebe ve yatırım hareketleri.
+- **Yolcu dünyası:** saatlik sefer planları, hafta sonu, takvim, hava, etkinlik, yolcu grupları, alternatif mod talebi, yoğun koridorlar, karşılanmayan talep ve başlangıç/varış akış haritası.
+- **Kariyer ve özel şehirler:** beş senaryo, sekiz başarım, isteğe bağlı iflas koşulu ve kurtarma finansmanı. Yeni şehir için koordinat, yarıçap, nüfus ve bütçe seç; bölge ekle veya JSON listesi yükle. Örnek format: `[{"name":"Üniversite","lng":35.5,"lat":38.7,"weight":8,"kind":"school","population":12000,"source":"Oyuncu tahmini"}]`. Türler home, work, school, mall, airport, center ve stadium.
+- **Çevrimdışı:** üretim sürümünü HTTPS veya localhost üzerinden ilk kez yükledikten sonra uygulama kabuğu önbelleğe alınır. İnternet yokken gerçek harita altlığı yerine yerel şema/boş altlık kullanılabilir. Üçüncü taraf harita döşemeleri indirilmez.
+
+Yönetim → Şirket kimliği ve gerçekçilik içinden gelişmiş personel, enerji, hava, arıza ve kapasite hesaplarını açabilirsin. Varsayılan klasik mod eski kayıtların ekonomi dengesini korur. Hesaplamalar oyun amaçlı yaklaşık modellerdir: gerçek mahalle verileri otomatik çekilmez; coğrafi güzergâh ve yapı mühendisliği doğrulanmaz; araç durumu filo seviyesinde modellenir.
 
 ## Simülasyon
 
 - `src/cities.js` şehir sınırlarını, talep merkezlerini, ulaşım türlerini ve hedefleri içerir. İl nüfusları [TÜİK ADNKS 2025](https://data.tuik.gov.tr/Bulten/Index?p=53899) ve İstatistiklerle Çocuk 2025, tablo 1.6 kaynaklıdır. İl nüfusu, şehirler arası talep çarpanına yumuşatılarak uygulanır. Tek tek mahalle/nokta ağırlıkları, hat şablonları ve konumlar yaklaşık oyun değerleridir; resmi tarifeler veya gözlenen yolcu sayıları değildir.
 - `src/model.js` kuş uçuşu koridor uzaklığını, yapım süresini ve filo başına kapasiteyi hesaplar. İkili yığınlı Dijkstra ile en kısa rotayı yürüyüş, bekleme, hat üstü yolculuk ve aktarma süreleriyle bulur. Her gün 18 saat diliminde kapasite, pik talep, yol trafiği ve gelir hesaplanır; 30 günde bir talep bölgeleri büyür. `src/worker.js` bu hesabı arayüzden ayrı bir Web Worker'da çalıştırır.
 - `src/map.js` gerçek altlık haritası üzerinde durakları, depoları, taslakları ve araç hareketlerini çizer. `src/app.js` paneli, araçları, oyun saatini ve kayıtları yönetir.
-- Sunucu veya hesap kurulumu gerekmiyor. İnternet ve WebGL, altlık haritanın gösterimi için gerekli. Harita açılamazsa paneldeki nokta listesiyle oyun sürdürülebilir.
+- Sunucu veya hesap kurulumu gerekmiyor. İnternet ve WebGL, altlık haritanın gösterimi için gerekli. Harita açılamazsa yerel şema ve paneldeki nokta listesiyle oyun sürdürülebilir.
 
 ## İnceleme ve kaynaklar
 

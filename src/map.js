@@ -3,6 +3,7 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { accessibleColors, availableDistricts, cities, corridors, modes, vehicleModels } from './cities.js'
 import { active, distance, estimate, WALK_RADIUS } from './model.js'
+import {linePath,pointDistricts,profile,gameCity,companyOf,serviceStopIds} from './advanced.js'
 
 setWorkerUrl(workerUrl)
 
@@ -11,9 +12,10 @@ const feature = (type, coordinates, properties = {}) => ({
   type: 'Feature', geometry: { type, coordinates }, properties,
 })
 const tint = ['get', 'color']
-const sources = ['districts', 'coverage', 'reference', 'depots', 'lines', 'stations', 'draft', 'vehicles', 'draft-preview']
+const sources = ['districts', 'coverage', 'reference', 'depots', 'lines', 'stations', 'draft', 'vehicles', 'draft-preview','flow']
 const lineTint=['case',['boolean',['get','heat'],false],['interpolate',['linear'],['get','load'],0,'#2e9e6a',.7,'#f2b705',1,'#d1342b'],tint]
 const layers = [
+  {id:'passenger-flow',source:'flow',type:'line',paint:{'line-color':'#8c4ab4','line-opacity':.35,'line-width':['interpolate',['linear'],['get','demand'],0,1,5000,4,25000,10]}},
   {id:'reference-lines',source:'reference',type:'line',paint:{'line-color':'#7f9299','line-width':3,'line-dasharray':[2,2],'line-opacity':.75}},
   {id:'coverage-area',source:'coverage',type:'fill',paint:{'fill-color':'#28a778','fill-opacity':.13,'fill-outline-color':'#277c66'}},
   { id: 'district-halo', source: 'districts', type: 'circle', paint: {
@@ -72,7 +74,7 @@ export function makeMap(container, city, selectPoint, report) {
     })
   } catch {
     report('WebGL açılamadı. Panelden talep merkezlerini seçerek oynayabilirsin.')
-    return { showCity() {}, render() {}, animate() {}, recenter() {} }
+    return makeSchematic(container,city,selectPoint)
   }
   map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
   map.touchZoomRotate.disableRotation()
@@ -83,9 +85,9 @@ export function makeMap(container, city, selectPoint, report) {
   let mode = ''
   let currentCity = city
   let paths = []
-  let projection, heat=false, walk=false, reference=false, accessible=false, currentTheme, styleRevision=0
+  let projection, heat=false, walk=false, reference=false, flow=false, accessible=false, currentTheme, styleRevision=0
   let alerts=[], stationPopup, previewMarker
-  const color = l => accessible?accessibleColors[(l.number-1)%accessibleColors.length]:l.color
+  const color = l => accessible?accessibleColors[(l.number-1)%accessibleColors.length]:profile(l).brandColor||l.color
 
   function showCity(nextCity) {
     closeStation()
@@ -94,7 +96,7 @@ export function makeMap(container, city, selectPoint, report) {
   }
 
   function recenter() {
-    const current = cities[currentCity]
+    const current = snapshot?.city===currentCity?gameCity(snapshot):cities[currentCity]
     map.jumpTo({ center: current.center, zoom: current.zoom })
   }
 
@@ -141,17 +143,18 @@ export function makeMap(container, city, selectPoint, report) {
       for (const stop of line.stops) {counts.set(stop, (counts.get(stop) ?? 0) + 1);if(!rings.has(stop))rings.set(stop,[]);rings.get(stop).push(color(line))}
     }
     const coverageByName=new Map((projection?.districts??[]).map(d=>[d.name,d.stop]))
-    setSource('districts', showDemand||walk ? availableDistricts(snapshot.city,snapshot.day).map(([name, lng, lat, weight,kind]) =>
+    setSource('districts', showDemand||walk ? pointDistricts(snapshot).map(([name, lng, lat, weight,kind]) =>
       feature('Point', [lng, lat], { name, weight:weight*(snapshot.growth[name]??1),landmark:['airport','mall','school'].includes(kind),unserved:walk&&!coverageByName.get(name) })) : [])
     const anchors=new Map(cities[snapshot.city].districts.map(d=>[d[0],d.slice(1,3)]))
-    setSource('reference',reference?(corridors[snapshot.city]??[]).map(([name,,...stops])=>feature('LineString',stops.map(n=>anchors.get(n)).filter(Boolean),{name})):[])
-    const activeIds=new Set(snapshot.lines.filter(l=>active(l,snapshot.day)).flatMap(l=>l.stops))
+    setSource('reference',reference&&!companyOf(snapshot).customCity?(corridors[snapshot.city]??[]).map(([name,,...stops])=>feature('LineString',stops.map(n=>anchors.get(n)).filter(Boolean),{name})):[])
+    setSource('flow',flow?(projection?.flows??[]).slice(0,30).map(f=>feature('LineString',[f.fromPosition,f.toPosition],{demand:f.demand})):[])
+    const activeIds=new Set(snapshot.lines.filter(l=>active(l,snapshot.day)).flatMap(serviceStopIds))
     setSource('coverage',walk?snapshot.stations.filter(s=>activeIds.has(s.id)).map(s=>feature('Polygon',[circle(s.position)])):[])
     setSource('depots', snapshot.depots.map((d) => feature('Point', d.position, { name: d.name })))
     setSource('stations', snapshot.stations.map((s) => feature('Point', s.position, {
       id: s.id, name: s.name, transfer: counts.get(s.id) > 1,...Object.fromEntries((rings.get(s.id)??[]).slice(0,3).map((c,i)=>[`ring${i+1}`,c])),
     })))
-    setSource('lines', snapshot.lines.map((l) => feature('LineString', l.stops.map((id) => stationById.get(id).position), {
+    setSource('lines', snapshot.lines.map((l) => feature('LineString', linePath(l,stationById), {
       color: color(l), id: l.id, name: l.name, selected: selected === l.id, building: l.readyAt > snapshot.day,heat:heat&&active(l,snapshot.day),load:(projection?.results[l.id]?.boards??0)/Math.max(1,projection?.results[l.id]?.capacity??0),pattern:accessible?(l.number-1)%3:0,
     })))
     const coords = draft?.stops.map((s) => s.position) ?? []
@@ -159,7 +162,7 @@ export function makeMap(container, city, selectPoint, report) {
     if (coords.length > 1) preview.push(feature('LineString', coords))
     setSource('draft', preview)
     paths = snapshot.lines.filter((l) => active(l, snapshot.day)).map((line) => {
-      const coordinates = line.stops.map((id) => stationById.get(id).position)
+      const coordinates = linePath(line,stationById)
       const segments = coordinates.slice(1).map((p, i) => distance(coordinates[i], p))
       return { line, coordinates, segments, total: segments.reduce((a, b) => a + b, 0) }
     })
@@ -175,15 +178,15 @@ export function makeMap(container, city, selectPoint, report) {
     for (const { line, coordinates, segments, total } of paths) {
       const count = Math.min(line.fleet, 8)
       for (let i = 0; i < count; i++) {
-        const cycle=2*(total/(modes[line.mode].speed*vehicleModels[line.model??'standard'].speed)*60+(coordinates.length-1)*.55)+4
+        const p=profile(line),cycle=(p.ring?1:2)*(total/(modes[line.mode].speed*vehicleModels[line.model??'standard'].speed)*60+(line.stops.length-1)*.55)+4
         const phase = (minute / cycle + i / count) % 1
-        let remaining = (phase < .5 ? phase * 2 : (1 - phase) * 2) * total
+        let remaining = (p.ring?phase:phase < .5 ? phase * 2 : (1 - phase) * 2) * total
         let index = 0
         while (index < segments.length - 1 && remaining > segments[index]) remaining -= segments[index++]
         const a = coordinates[index]
         const b = coordinates[index + 1]
         const fraction = segments[index] > 0 ? remaining / segments[index] : 0
-        const bearing=Math.atan2((b[0]-a[0])*Math.cos(a[1]*Math.PI/180),b[1]-a[1])*180/Math.PI+(phase<.5?0:180)
+        const bearing=Math.atan2((b[0]-a[0])*Math.cos(a[1]*Math.PI/180),b[1]-a[1])*180/Math.PI+(p.ring||phase<.5?0:180)
         vehicles.push(feature('Point', [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction], {color:color(line),bearing,accessible,name:`H${line.number}`}))
       }
     }
@@ -234,13 +237,33 @@ export function makeMap(container, city, selectPoint, report) {
   return {
     showCity, recenter, animate,setTheme,showStation,closeStation,
     render(state, options) {
+      const changed=JSON.stringify(snapshot?gameCity(snapshot).center:null)!==JSON.stringify(gameCity(state).center)
       snapshot = state
+      if(changed){currentCity=state.city;recenter()}
       draft = options.draft
       selected = options.selected
       showDemand = options.showDemand
-      projection=options.projection;heat=options.heat;walk=options.walk;reference=options.reference;accessible=options.accessible
+      projection=options.projection;heat=options.heat;walk=options.walk;reference=options.reference;flow=options.flow;accessible=options.accessible
       mode = options.mode
       update()
     },
   }
+}
+
+// A real interactive schematic remains available even without WebGL or map tiles.
+function makeSchematic(container,city,selectPoint){
+  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.setAttribute('viewBox','0 0 800 600');svg.setAttribute('class','schematic-map');svg.setAttribute('aria-label','Yerel ulaşım şeması');svg.setAttribute('preserveAspectRatio','none');container.replaceChildren(svg)
+  let state,options={}
+  const node=(tag,attrs,parent=svg)=>{const el=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);parent.append(el);return el}
+  const xy=p=>{const [w,s,e,n]=(state?gameCity(state):cities[city]).bounds;return [30+(p[0]-w)/(e-w)*740,30+(n-p[1])/(n-s)*540]}
+  const pos=(x,y)=>{const [w,s,e,n]=(state?gameCity(state):cities[city]).bounds;return [w+(x-30)/740*(e-w),n-(y-30)/540*(n-s)]}
+  const dot=(position,attrs,parent)=>{const [cx,cy]=xy(position);return node('circle',{cx,cy,...attrs},parent)}
+  const path=(coordinates,attrs)=>node('polyline',{points:coordinates.map(p=>xy(p).join(',')).join(' '),fill:'none',...attrs})
+  function draw(){if(!state)return;svg.replaceChildren();const byId=new Map(state.stations.map(s=>[s.id,s]));if(options.flow)for(const f of (options.projection?.flows??[]).slice(0,30))path([f.fromPosition,f.toPosition],{stroke:'#9356a6','stroke-width':Math.min(8,1+f.demand/3000),opacity:.35});if(options.showDemand)for(const [name,x,y,w] of pointDistricts(state)){const el=dot([x,y],{r:3+w/2,fill:'#a84c35',opacity:.65});el.addEventListener('click',e=>{e.stopPropagation();selectPoint([x,y],undefined,name)})}
+    for(const l of state.lines){const el=path(linePath(l,byId),{stroke:options.accessible?accessibleColors[(l.number-1)%accessibleColors.length]:profile(l).brandColor||l.color,'stroke-width':l.id===options.selected?6:4,'stroke-dasharray':l.readyAt>state.day?'5 4':'none'});el.addEventListener('click',e=>{e.stopPropagation();selectPoint(byId.get(l.stops[0]).position,undefined,undefined,l.id)})}
+    for(const d of state.depots)dot(d.position,{r:6,fill:'#186470',stroke:'#fff','stroke-width':2});for(const s of state.stations){const el=dot(s.position,{r:6,fill:'#fff',stroke:'#18282a','stroke-width':2});el.addEventListener('click',e=>{e.stopPropagation();selectPoint(s.position,s.id)});const [x,y]=xy(s.position);const t=node('text',{x:x+8,y:y-8,fill:'currentColor','font-size':10});t.textContent=s.name}
+    if(options.draft){const coordinates=options.draft.stops.map(s=>s.position);if(coordinates.length>1)path(coordinates,{stroke:'#df8a55','stroke-width':4,'stroke-dasharray':'5 3'});for(const p of coordinates)dot(p,{r:5,fill:'#df8a55'})}
+  }
+  svg.addEventListener('click',e=>{const r=svg.getBoundingClientRect();selectPoint(pos((e.clientX-r.left)/r.width*800,(e.clientY-r.top)/r.height*600))})
+  return {showCity(next){city=next;draw()},recenter(){draw()},render(next,opts){state=next;options=opts;draw()},animate(){},setTheme(){draw()}}
 }

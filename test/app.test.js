@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs'
 import {runInNewContext} from 'node:vm'
 import * as model from '../src/model.js'
 import * as cities from '../src/cities.js'
+import * as advanced from '../src/advanced.js'
+import * as management from '../src/management.js'
 
 // Exercise initial rendering and the full fallback-panel flow without WebGL.
 // The real browser's WebGL rendering is covered separately by style validation.
@@ -15,7 +17,7 @@ test('application boots and plays a complete line through its offline panel',()=
   }]))
   const saved=new Map()
   const document={getElementById:id=>elements.get(id),querySelectorAll:()=>[],addEventListener(){},documentElement:{dataset:{}},activeElement:null}
-  const context={...model,...cities,document,window:{addEventListener(){}},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v)},
+  const context={...model,...cities,...advanced,...management,document,window:{addEventListener(){}},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v)},
     makeMap:()=>({render(){},animate(){},showCity(){},recenter(){},setTheme(){}}),
     setTimeout:()=>0,clearTimeout(){},matchMedia:()=>({matches:false}),requestAnimationFrame(){},performance,structuredClone,crypto,
   }
