@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="İstanbul, Ankara ve İzmir'de toplu taşıma ağı tasarla ve işlet.">
+    <meta name="theme-color" content="#18282a">
+    <title>Hat Atölyesi</title>
+  </head>
+  <body>
+    <div class="app">
+      <header class="bar">
+        <a class="brand" href="./" aria-label="Hat Atölyesi ana sayfa">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>Hat Atölyesi</span>
+        </a>
+        <div class="header-controls">
+          <label class="city-label" for="city">Şehir</label>
+          <select id="city" aria-label="Şehir"></select>
+          <button id="help" class="quiet" type="button">Yardım</button>
+          <button id="save" class="quiet" type="button">Kayıt</button>
+        </div>
+      </header>
+      <main>
+        <section class="overview" aria-label="İşletme özeti">
+          <div class="overview-title"><h1 id="city-title"></h1><p>Ağ işletim masası</p></div>
+          <div class="metric"><span>Bütçe</span><strong id="cash"></strong></div>
+          <div class="metric"><span>Günlük yolcu tahmini</span><strong id="riders"></strong></div>
+          <div class="metric"><span>Talep kapsaması</span><strong id="coverage"></strong></div>
+          <div class="clock"><div><span id="day"></span><strong id="time"></strong></div>
+            <div class="speeds" role="group" aria-label="Simülasyon hızı">
+              <button type="button" data-speed="0" aria-label="Duraklat">Ⅱ</button>
+              <button type="button" data-speed="1">1×</button>
+              <button type="button" data-speed="4">4×</button>
+              <button type="button" data-speed="12">12×</button>
+              <button type="button" id="skip">Günü bitir</button>
+            </div>
+          </div>
+        </section>
+        <div class="workspace">
+          <section class="cartography" aria-label="Oyun haritası">
+            <div id="map"></div>
+            <div class="map-toolbar">
+              <label><input id="demand" type="checkbox" checked> Talep noktaları</label>
+              <button id="recenter" type="button">Merkezle</button>
+            </div>
+            <div id="map-banner" role="status" hidden></div>
+            <div class="legend"><span class="dot"></span> Talep merkezi <span class="ring"></span> Durak</div>
+          </section>
+          <aside class="desk" aria-label="Ağ yönetimi">
+            <nav class="tabs" aria-label="Ağ paneli">
+              <button type="button" data-tab="lines">Hatlar</button>
+              <button type="button" data-tab="goals">Hedefler</button>
+              <button type="button" data-tab="finance">Maliye</button>
+            </nav>
+            <div id="panel"></div>
+          </aside>
+        </div>
+      </main>
+    </div>
+    <dialog id="dialog">
+      <div class="dialog-head"><h2 id="dialog-title"></h2><form method="dialog"><button aria-label="Kapat">×</button></form></div>
+      <div id="dialog-body"></div>
+    </dialog>
+    <div id="notice" role="status" hidden></div>
+    <input type="file" id="import" accept=".json,application/json" hidden>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
