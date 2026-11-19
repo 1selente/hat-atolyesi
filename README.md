@@ -33,7 +33,23 @@ Her şehir ayrı otomatik kaydedilir. Kayıt menüsü JSON dışa/içe aktarım�
 - **Kariyer ve özel şehirler:** beş senaryo, sekiz başarım, isteğe bağlı iflas koşulu ve kurtarma finansmanı. Yeni şehir için koordinat, yarıçap, nüfus ve bütçe seç; bölge ekle veya JSON listesi yükle. Örnek format: `[{"name":"Üniversite","lng":35.5,"lat":38.7,"weight":8,"kind":"school","population":12000,"source":"Oyuncu tahmini"}]`. Türler home, work, school, mall, airport, center ve stadium.
 - **Çevrimdışı:** üretim sürümünü HTTPS veya localhost üzerinden ilk kez yükledikten sonra uygulama kabuğu önbelleğe alınır. İnternet yokken gerçek harita altlığı yerine yerel şema/boş altlık kullanılabilir. Üçüncü taraf harita döşemeleri indirilmez.
 
-Yönetim → Şirket kimliği ve gerçekçilik içinden gelişmiş personel, enerji, hava, arıza ve kapasite hesaplarını açabilirsin. Varsayılan klasik mod eski kayıtların ekonomi dengesini korur. Hesaplamalar oyun amaçlı yaklaşık modellerdir: gerçek mahalle verileri otomatik çekilmez; coğrafi güzergâh ve yapı mühendisliği doğrulanmaz; araç durumu filo seviyesinde modellenir.
+Yönetim → Şirket kimliği ve gerçekçilik içinden gelişmiş personel, enerji, hava, arıza ve kapasite hesaplarını açabilirsin. Varsayılan klasik mod eski kayıtların ekonomi dengesini korur.
+
+## Sürüm 3.1: Ayrıntılı işletme
+
+1. **Gerçek mahalle nüfusu:** Yönetim → Gerçek mahalle nüfus paketi. Oyuna gömülü 624 mahalle, sekiz şehirde seçili 27 ilçeden derlenmiştir. İnternet veya API anahtarı gerektirmez. Seçilen mahallelerin gerçek nüfusu, koordinatı ve kaynak kodu kayda eklenir; aynı mahalle ikinci kez eklenmez. Oyun sınırları, toplam 100 özel bölge sınırı ve geçerli koordinatlar doğrulanır.
+2. **Araç kartları:** Hatlar → Tek tek araç yönetimi. Araç numarası, edinim ve son bakım günü, üretici, kilometre, kondisyon, bağımsız arıza ve atölye durumu saklanır. İkinci el araç ayrı kondisyonla teslim edilir. Yedek araç yalnızca hizmet açığını kapatır. Gerçekçilikte bakım için teknisyen ve atölye gerekir, yıpranma çalışılan saatlere bağlıdır.
+3. **Vardiyalar:** Yönetim'den sabah, öğle ve akşam sürücülerini ayır; hat başına vardiya sınırı belirle. Manuel vardiya toplamı kadroyu aşamaz ve sürücüler aynı vardiyada birden fazla hatta sayılmaz. İstasyon, temizlik ve güvenlik kadroları kapasite/şikâyetleri etkiler. Otomatik vardiya eski dengeyi korur.
+4. **Şantiye:** Yedi iş aşamasının ilerlemesi, bütçe, gecikme, ek ekip ve duraklatma ayrı izlenir. Hava, yapı türü ve ekip sayısı tahmini açılışa etki eder. Klasik modda olağan inşaat süresi korunur.
+5. **Trafik ve güzergâh:** Otobüs hattında yerel cadde, ana arter veya öncelikli yol seç. Saatler, hava, ortak koridorlar ve yakın mahalle nüfusu trafik katsayısını değiştirir. İki durak arasına GeoJSON LineString veya koordinat dizisi aktar; en önemli 12 ara nokta ve maliyet farkı hesaplanır.
+6. **Şikâyet merkezi:** Doluluk, bekleme, arıza, temizlik, erişim, güvenlik ve hizmet eksikliği tahminleri günlük tutulur. Sorun ortadan kalktığında kayıt çözülmüş olarak işaretlenir; gerçekçilikte şirket itibarı etkilenir.
+7. **Çevrimdışı:** Uygulama, çalışan simülasyon ve harita işçileri, stiller ve mahalle veri paketi kurulumda önbelleğe alınır. Eksik dosya varsa yeni önbellek eski çalışan sürümün yerini almaz. Çevrimdışı yeniden açılış, kurulum hatası ve üçüncü taraf döşemelerinin önbelleğe alınmaması otomatik testlerle doğrulanır.
+
+Eski sürüm 1–3 kayıtları çalışır. Ayrıntılı araç/şantiye alanları gerektiğinde oluşur. Nüfus kayıtları gerçek kaynaklıdır; yolcu sayıları, trafik yoğunluğu, inşaat süreleri ve arıza oranları oyun tahminidir. Tüm Türkiye'nin mahalleleri ya da canlı trafik verisi değildir.
+
+### Mahalle veri paketi
+
+Kaynak: **TÜİK, Adrese Dayalı Nüfus Kayıt Sistemi (2025)**. Konumlar: **© OpenStreetMap katkıcıları**, [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/). Derleme: [Topografya Açık Veri, mahalle verileri](https://github.com/topografya/veri/tree/yayin/mahalle), OSM 2026-11-01 kesiti. Ayrı, indirilebilir türetilmiş veri paketi `public/neighborhoods-2025.json` dosyasında ODbL 1.0 kapsamında sunulur; kaynak dosya yolları ve blob SHA değerleri de pakette yer alır. Konumu olmayan kayıtlar dahil edilmez, sınırları temsil eden noktalar veya yayımlanmış OSM noktaları kullanılır.
 
 ## Simülasyon
 

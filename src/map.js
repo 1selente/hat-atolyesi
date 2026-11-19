@@ -4,6 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { accessibleColors, availableDistricts, cities, corridors, modes, vehicleModels } from './cities.js'
 import { active, distance, estimate, WALK_RADIUS } from './model.js'
 import {linePath,pointDistricts,profile,gameCity,companyOf,serviceStopIds} from './advanced.js'
+import {roster} from './detail.js'
 
 setWorkerUrl(workerUrl)
 
@@ -164,7 +165,8 @@ export function makeMap(container, city, selectPoint, report) {
     paths = snapshot.lines.filter((l) => active(l, snapshot.day)).map((line) => {
       const coordinates = linePath(line,stationById)
       const segments = coordinates.slice(1).map((p, i) => distance(coordinates[i], p))
-      return { line, coordinates, segments, total: segments.reduce((a, b) => a + b, 0) }
+      const ready=roster(line,snapshot.day).filter(u=>u.failedUntil<=snapshot.day&&u.maintenanceUntil<=snapshot.day).sort((a,b)=>Number(a.reserve)-Number(b.reserve)||a.number-b.number)
+      return { line, coordinates, segments, total: segments.reduce((a, b) => a + b, 0),ready }
     })
     animate(snapshot.minute)
     map.getCanvas().style.cursor = mode ? 'crosshair' : ''
@@ -175,8 +177,9 @@ export function makeMap(container, city, selectPoint, report) {
 
   function animate(minute) {
     const vehicles = []
-    for (const { line, coordinates, segments, total } of paths) {
-      const count = Math.min(line.fleet, 8)
+    for (const { line, coordinates, segments, total,ready } of paths) {
+      const hour=Math.min(23,Math.floor(minute/60)),slice=projection?.results[line.id]?.bySlice?.find(x=>x.hour===hour)
+      const count = slice&&!slice.capacity?0:Math.min(slice?.available??line.fleet,ready.length,8)
       for (let i = 0; i < count; i++) {
         const p=profile(line),cycle=(p.ring?1:2)*(total/(modes[line.mode].speed*vehicleModels[line.model??'standard'].speed)*60+(line.stops.length-1)*.55)+4
         const phase = (minute / cycle + i / count) % 1
@@ -187,7 +190,7 @@ export function makeMap(container, city, selectPoint, report) {
         const b = coordinates[index + 1]
         const fraction = segments[index] > 0 ? remaining / segments[index] : 0
         const bearing=Math.atan2((b[0]-a[0])*Math.cos(a[1]*Math.PI/180),b[1]-a[1])*180/Math.PI+(p.ring||phase<.5?0:180)
-        vehicles.push(feature('Point', [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction], {color:color(line),bearing,accessible,name:`H${line.number}`}))
+        vehicles.push(feature('Point', [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction], {color:color(line),bearing,accessible,name:`H${line.number}-${ready[i].number}`}))
       }
     }
     setSource('vehicles', vehicles)

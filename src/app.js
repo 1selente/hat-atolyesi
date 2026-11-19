@@ -4,8 +4,9 @@ import {
   finishDay, newGame, parseSave, projectDay, rewardGoals, service, vehiclePrice,
 } from './model.js'
 import { makeMap } from './map.js'
-import {addContract,createCustomCity,gameCity,closestPoint,importDistricts,recordTransaction,serviceStopIds,addDistrict,assignedFleet,companyOf,configureLine,depotProfile,edgeKey,finance,hire,maintenance,orderVehicles,pointDistricts,profile,rescue,scenarioConfig,upgradeDepot,upgradeStation} from './advanced.js'
+import {addContract,createCustomCity,gameCity,closestPoint,importDistricts,recordTransaction,serviceStopIds,addDistrict,assignedFleet,reservedOrders,companyOf,configureLine,depotProfile,edgeKey,finance,hire,maintenance,orderVehicles,pointDistricts,profile,rescue,scenarioConfig,upgradeDepot,upgradeStation} from './advanced.js'
 import {renderLineAdvanced,renderManagement,stationUpgradeButtons} from './management.js'
+import {syncRoster,syncCondition,maintainUnit,setShifts,setLineShifts,setConstruction,accelerateConstruction,neighborhoodRows,simplifyRoute,ROAD_CLASSES} from './detail.js'
 import './style.css'
 
 const $ = (id) => document.getElementById(id)
@@ -222,7 +223,7 @@ function currentLine() {
 function renderLine(line) {
   const mode = modes[line.mode]
   const st = new Map(state.stations.map((s) => [s.id, s]))
-  const specs = service(line, st)
+  const specs = service(line,st,Math.min(23,Math.floor(state.minute/60)),state)
   const forecast = projection.results[line.id]
   const price = vehiclePrice(line)
   const canBuy = line.fleet < 40 && state.cash >= price
@@ -235,7 +236,7 @@ function renderLine(line) {
       <div><dt>Tür</dt><dd>${mode.name}</dd></div>
       <div><dt>Durum</dt><dd>${describeLine(line)}</dd></div>
       <div><dt>Uzunluk</dt><dd>${decimal.format(specs.km)} km</dd></div>
-      <div><dt>Araç</dt><dd>${line.fleet}</dd></div>
+      <div><dt>Araç / hazır</dt><dd>${line.fleet} / ${specs.available}</dd></div>
       <div><dt>Gerçek sıklık</dt><dd>${forecast ? `${decimal.format(specs.interval)} dk` : '—'}</dd></div>
       <div><dt>Tahmini doluluk</dt><dd>${forecast?.capacity ? `%${Math.round(forecast.boards / forecast.capacity * 100)}` : '—'}</dd></div>
       <div><dt>Günlük biniş</dt><dd>${forecast ? number.format(Math.round(forecast.served)) : '—'}</dd></div>
@@ -458,9 +459,10 @@ function finishConstruction() {
 function advanceDay() {
   if (pending) return
   if(companyOf(state).bankrupt&&!companyOf(state).freeplay){setSpeed(0);return notify('Şirket iflas durumunda. Yönetimden kurtarma veya serbest oyun seç.')}
-  const opens = state.lines.filter((l) => l.readyAt === state.day + 1)
+  const building = state.lines.filter(l=>l.readyAt>state.day)
   checkpoint('Önceki gün',true)
   finishDay(state, projection)
+  const opens=building.filter(l=>l.readyAt<=state.day)
   if (opens.length) notify(`${opens.map((l) => l.name).join(', ')} inşaatı tamamlandı.`)
   else if (newlyOpenedDistricts(state.city,state.day).length) notify(`Yeni talep bölgeleri açıldı: ${newlyOpenedDistricts(state.city,state.day).join(', ')}`)
   else if ((state.day-1)%30===0) notify('Şehir büyüdü! Bağlantılı bölgelerde talep daha hızlı arttı.')
@@ -494,17 +496,21 @@ const actions = {
     const line = currentLine()
     const price = vehiclePrice(line)
     const d=state.depots.find(d=>d.id===profile(line).depot),onOrder=companyOf(state).orders.filter(o=>o.line===line.id).reduce((n,o)=>n+o.quantity,0)
-    if (line.fleet+onOrder >= 40 || state.cash < price || d&&assignedFleet(state,d)>=depotProfile(d).capacity) return notify('Filo veya depo kapasitesi yetersiz.')
+    if (line.fleet+onOrder >= 40 || state.cash < price || d&&assignedFleet(state,d)+reservedOrders(state,d)>=depotProfile(d).capacity) return notify('Filo veya depo kapasitesi yetersiz.')
     state.cash -= price
     recordTransaction(state,'Araç alımı',-price,line.name)
+    syncRoster(line,state.day)
     line.fleet++
+    syncRoster(line,state.day);syncCondition(line,state.day)
     update({ save: true })
   },
   sell() {
     const line = currentLine()
     if (!line.fleet) return
-    line.fleet--
-    state.cash += Math.floor(vehiclePrice(line) * .52*(1-profile(line).wear/150))
+    syncRoster(line,state.day);const unit=line.units.filter(u=>!u.reserve).at(-1)
+    const revenue=Math.floor(vehiclePrice(line) * .52*(1-unit.wear/150))
+    line.fleet--;line.units=line.units.filter(u=>u.number!==unit.number);syncCondition(line,state.day)
+    state.cash += revenue;recordTransaction(state,'Araç satışı',revenue,line.name)
     update({ save: true })
   },
   loan() {
@@ -514,10 +520,13 @@ const actions = {
     update({ save: true })
   },
   'open-line'(el){selected=el.dataset.line;tab='lines';update()},
-  'accelerate'(){const l=currentLine();if(l.readyAt>state.day&&state.cash>=40){state.cash-=40;l.readyAt--;update({save:true})}},
+  'accelerate'(){const l=currentLine();if(accelerateConstruction(state,l)){recordTransaction(state,'İnşaat hızlandırma',-40,l.name);update({save:true})}},
   'upgrade-depot'(el){const d=state.depots.find(x=>x.id===el.dataset.depot);if(d&&upgradeDepot(state,d))update({save:true});else notify('Depo geliştirilemedi.')},
   'maintain'(){if(maintenance(state,currentLine())){notify('Araçlar bakıma alındı.');update({save:true})}else notify('Bakım başlatılamadı.')},
-  'repair'(){const l=currentLine(),p=profile(l);if(p.failedUntil>state.day&&state.cash>=15){state.cash-=15;l.operations={...p,failedUntil:0};update({save:true})}else notify('Kurtarma için bütçe veya arıza gerekli.')},
+  'repair'(){const l=currentLine(),p=profile(l);if(l.units){const u=l.units.find(u=>u.failedUntil>state.day&&u.maintenanceUntil<=state.day);if(u){const cost=maintainUnit(state,l,u.number,true);if(cost){recordTransaction(state,'Araç onarımı',-cost,l.name);return update({save:true})}}return notify('Onarım için teknisyen, atölye ve bütçe gerekli.')}if(p.failedUntil>state.day&&state.cash>=15){state.cash-=15;l.operations={...p,failedUntil:0};update({save:true})}else notify('Kurtarma için bütçe veya arıza gerekli.')},
+  'unit-service'(el){const l=currentLine(),cost=maintainUnit(state,l,Number(el.dataset.unit),el.dataset.repair==='true');if(cost){recordTransaction(state,'Araç bakımı',-cost,l.name);update({save:true})}else notify('İşlem için bütçe, arıza durumu ve uygun atölyeyi kontrol et.')},
+  'automatic-shifts'(){delete state.company.shifts;update({save:true});notify('Otomatik vardiya düzeni etkin.')},
+  async 'neighborhood-import'(el){const snapshot=state;const limit=Number(el.closest('form').elements.limit.value);el.disabled=true;try{const response=await fetch(new URL('./neighborhoods-2025.json',location.href),{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('Veri paketi açılamadı');const data=await response.json();if(state!==snapshot)return;const c=companyOf(state);if(c.customCity)throw Error('Özel şehirde hazır mahalleler kullanılamaz.');const rows=neighborhoodRows(data,state.city,gameCity(state).bounds,Math.min(limit,100-c.customDistricts.length),[...pointDistricts(state).map(d=>d[0]),...cities[state.city].districts.map(d=>d[0])]);if(!rows.length)throw Error('Yeni mahalle yok veya bölge sınırına ulaşıldı.');if(!importDistricts(state,rows))throw Error('Veri doğrulanamadı.');update({save:true});notify(rows.length+' gerçek nüfuslu mahalle eklendi.')}catch(e){notify(e.message||'Mahalle paketi açılamadı.')}finally{el.disabled=false}},
   'branch'(){const l=currentLine();if(!startDraft())return;draft.mode=l.mode;draft.depth=l.depth;draft.parent=l.id;draft.name=`${l.name} B`;draft.stops=l.stops.slice(0,Math.max(1,Math.ceil(l.stops.length/2))).map(id=>state.stations.find(s=>s.id===id));update()},
   'express-clone'(){const l=currentLine();if(!startDraft())return;draft.mode=l.mode;draft.depth=l.depth;draft.parent=l.id;draft.express=true;draft.name=`${l.name} Ekspres`;draft.stops=l.stops.map(id=>state.stations.find(s=>s.id===id));update()},
   'replacement-bus'(){const l=currentLine();if(!startDraft())return;draft.mode='localbus';draft.depth=0;draft.parent=l.id;draft.name=`${l.name} Yedek`;draft.stops=l.stops.map(id=>state.stations.find(s=>s.id===id));update()},
@@ -538,7 +547,12 @@ function formCommand(name,data){
   }
   if(name==='line-schedule'){const parse=s=>s.trim()?s.split(',').map(x=>Number(x.trim())):null;return applyLine(l,{schedule:parse(get('normal')),weekendSchedule:parse(get('weekend'))})}
   if(name==='waypoint')return addWaypoint(l,get('edge'),[int('lng'),int('lat')])
-  if(name==='order')ok=orderVehicles(state,l,int('quantity'),get('supplier'),data.has('used'))
+  if(name==='route-import'){try{const points=simplifyRoute(JSON.parse(get('geojson')),gameCity(state).bounds),[a,b]=get('edge').split('|'),st=new Map(state.stations.map(s=>[s.id,s]));if(!points||!st.has(a)||!st.has(b))throw Error();const first=st.get(a).position,last=st.get(b).position;const direct=distance(points[0],first)+distance(points.at(-1),last),reverse=distance(points[0],last)+distance(points.at(-1),first);if(Math.min(direct,reverse)>1.5)throw Error();const ordered=direct<=reverse?points:[...points].reverse();const middle=ordered.slice(1,-1);return applyLine(l,{waypoints:{...p.waypoints,[edgeKey(a,b)]:a<b?middle:middle.reverse()}})}catch{return notify('GeoJSON güzergâhı geçersiz veya uçları seçilen duraklara uzak.')}}
+  if(name==='line-shifts')ok=setLineShifts(state,l,[int('morning'),int('noon'),int('evening')])
+  else if(name==='shifts')ok=setShifts(state,[int('morning'),int('noon'),int('evening')])
+  else if(name==='construction')ok=setConstruction(state,l,int('crew'),data.has('paused'))
+  else if(name==='road-class'){ok=Object.hasOwn(ROAD_CLASSES,get('road'));if(ok)l.roadClass=get('road')}
+  else if(name==='order')ok=orderVehicles(state,l,int('quantity'),get('supplier'),data.has('used'))
   else if(name==='company'){if(!get('name').trim())return notify('Şirket adı gerekli.');if(!c.realism&&data.has('realism')){c.staff.driver=Math.max(c.staff.driver,state.lines.reduce((a,l)=>a+l.fleet,0)+10);c.staff.maintenance=Math.max(c.staff.maintenance,2);c.staff.station=Math.max(c.staff.station,5)}c.realism=data.has('realism');c.freeplay=data.has('freeplay');c.name=get('name').trim().slice(0,48);c.color=get('color');if(c.freeplay)c.bankrupt=false}
   else if(name==='staff')ok=hire(state,get('role'),int('count'))
   else if(name==='policy'){c.policy=get('policy');c.tariff=get('tariff');c.discount=int('discount');c.pass=data.has('pass')}

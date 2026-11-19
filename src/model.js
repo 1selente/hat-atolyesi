@@ -1,4 +1,5 @@
 import { availableDistricts, cities, colors, goals, modes, vehicleModels } from './cities.js'
+import {newConstruction,validUnitDetails,validCompanyDetails,complaintsFor} from './detail.js'
 import {actualFare,companyDefaults,companyExpenses,companyOf,companyRevenue,edgePairs,eventFactor,gameCity,lineComfort,lineKilometres,lineOperating,passengerCompetition,pointDistricts,profile,recordTransaction,seasonalFactor,segmentTime,serviceStopIds,serviceConstraints,settleCompany,sharedSegments,stationAccess,stationCapacity,validCompany,validCustomCity,validDepot,validFacility,validOperations} from './advanced.js'
 
 export const DEPOT_COST = 340
@@ -83,6 +84,7 @@ export function buildLine(state, stops, mode, depth, extension) {
     }
     state.lines.push(extension)
   }
+  extension.construction=newConstruction(state.day,plan.days,plan.cost)
   state.cash -= plan.cost
   recordTransaction(state,'Hat inşaatı',-plan.cost,extension.name)
   return extension
@@ -154,7 +156,7 @@ export function projectDay(state) {
     const schedule = service(line, stations,undefined,state,shared)
     results[line.id] = { ...schedule, boards: 0, served:0, bySlice: [], capacity:0 }
     expense += schedule.expense
-    if(schedule.available>0&&HOURS.some(h=>serviceConstraints(line,state,h,shared).enabled))schedule.servedStops.forEach(id => activeStops.add(id))
+    if(HOURS.some(h=>{const check=serviceConstraints(line,state,h,shared);return check.enabled&&check.available>0}))schedule.servedStops.forEach(id => activeStops.add(id))
   }
   const districts = pointDistricts(state).map(([name, x, y, weight, kind]) => {
     const position = [x, y]
@@ -238,7 +240,7 @@ export function projectDay(state) {
     const carried=new Map(operating.map(l=>[l.id,0]))
     const stationLoads=new Map();if(company.realism)for(const trip of trips)for(const stop of [trip.a.stop,trip.b.stop])stationLoads.set(stop,(stationLoads.get(stop)??0)+trip.requested)
     for(const trip of trips) {
-      const ratios=company.realism?[trip.a.stop,trip.b.stop].map(id=>stationCapacity(stations.get(id))/18/Math.max(1,stationLoads.get(id))):[]
+      const ratios=company.realism?[trip.a.stop,trip.b.stop].map(id=>stationCapacity(stations.get(id))*Math.max(.6,Math.min(1,company.staff.station*4/Math.max(1,activeStops.size)))/18/Math.max(1,stationLoads.get(id))):[]
       const share=Math.min(1,...ratios,...trip.used.map(id=>schedules.get(id).capacity/loads.get(id)))
       const count=trip.requested*(Number.isFinite(share)?share:0)
       sliceRiders+=count; sliceDemand+=trip.requested; travel+=count*trip.minutes
@@ -270,7 +272,7 @@ export function projectDay(state) {
     averageTravel:riders?travel/riders:0,transfers:Math.round(transfers),alternative:Math.round(alternative),passengerGroups,flows:[...flowMap.values()].sort((a,b)=>b.demand-a.demand).slice(0,100),
     rating: demand ? Math.round(100 * (riders / demand) * Math.max(0.4, 1 - travel / Math.max(1, riders) / 135)) : null,
   }
-  return {...result,...companyRevenue(state,result)}
+  return {...result,...companyRevenue(state,result),complaints:complaintsFor(state,result)}
 }
 
 export function rewardGoals(state, projection) {
@@ -326,13 +328,13 @@ export function parseSave(json) {
       && colors.includes(l.color) && integer(l.number, 1, 1e7) && integer(l.readyAt, 1, 1e8 + 1000)
       && integer(l.depth, 0, 60) && integer(l.fleet, 0, 40) && integer(l.headway, 2, 30) && integer(l.peakHeadway,2,30) && Object.hasOwn(vehicleModels,l.model)
       && list(l.stops, modes[l.mode].maxStops ?? 24) && l.stops.length >= 2 && unique(l.stops)
-      && l.stops.every((key) => stopIds.has(key)) && (!l.operations||validOperations(profile(l),s,l)))
+      && l.stops.every((key) => stopIds.has(key)) && (!l.operations||validOperations(profile(l),s,l)) && validUnitDetails(l,s.day))
     || !unique(s.lines.map((l) => l.id)) || !unique(s.lines.map((l) => l.number))
     || !unique(s.goals) || !s.goals.every((key) => goals.some((g) => g.id === key))
     || !s.history.every((d) => d && integer(d.day, 1, s.day) && integer(d.riders, 0, 1e9) && number(d.cash, -1e15, 1e15))) {
     throw new Error('Kayıt verileri doğrulanamadı.')
   }
-  if(!validCompany(s.company,s))throw new Error('Şirket verileri doğrulanamadı.')
+  if(!validCompany(s.company,s)||!validCompanyDetails(s.company,s.day))throw new Error('Şirket verileri doğrulanamadı.')
   const byId = new Map(s.stations.map((station) => [station.id, station]))
   if (s.lines.some((line) => line.stops.slice(1).some((stop, index) =>
     distance(byId.get(stop).position, byId.get(line.stops[index]).position) < modes[line.mode].spacing))) {

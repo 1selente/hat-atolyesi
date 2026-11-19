@@ -105,6 +105,11 @@ dialog::backdrop { background: #12252890; }
 .hourly {padding:9px;background:var(--wash);border-radius:7px;display:grid;gap:5px}
 .advanced-section {border:1px solid var(--line);border-radius:7px;background:var(--paper);overflow:hidden}
 .advanced-section summary {cursor:pointer;font-weight:650;padding:10px 11px;background:var(--wash);font-size:.92rem}
+.unit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:8px}
+.unit-card{border:1px solid var(--line);border-radius:8px;padding:9px;display:grid;gap:7px;background:var(--paper)}
+.unit-card progress{width:100%;height:9px;accent-color:var(--accent)}
+.unit-card button{font-size:.8rem;min-height:32px}
+.status-pill{font-size:.75rem;padding:3px 7px;border:1px solid var(--line);border-radius:12px;white-space:nowrap}
 .advanced-body {padding:11px;gap:10px}
 .advanced-body form {min-width:0}
 .advanced-body h4 {margin:4px 0 0}
