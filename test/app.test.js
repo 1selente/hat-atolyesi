@@ -7,6 +7,7 @@ import * as cities from '../src/cities.js'
 import * as advanced from '../src/advanced.js'
 import * as management from '../src/management.js'
 import * as detail from '../src/detail.js'
+import * as saves from '../src/saves.js'
 
 // Exercise initial rendering and the full fallback-panel flow without WebGL.
 // The real browser's WebGL rendering is covered separately by style validation.
@@ -19,7 +20,7 @@ test('application boots, operates a line and imports data through its management
   const saved=new Map()
   const document={getElementById:id=>elements.get(id),querySelectorAll:()=>[],addEventListener(){},documentElement:{dataset:{}},activeElement:null}
   const dataset=JSON.parse(readFileSync(new URL('../public/neighborhoods-2025.json',import.meta.url),'utf8'))
-  const context={...model,...cities,...advanced,...management,...detail,document,window:{addEventListener(){}},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v)},
+  const context={...model,...cities,...advanced,...management,...detail,...saves,document,window:{addEventListener(){}},localStorage:{getItem:k=>saved.get(k)??null,setItem:(k,v)=>saved.set(k,v)},
     URL,AbortSignal,location:{href:'https://example.test/game/'},fetch:async url=>{assert.equal(String(url),'https://example.test/game/neighborhoods-2025.json');return {ok:true,json:async()=>dataset}},
     makeMap:()=>({render(){},animate(){},showCity(){},recenter(){},setTheme(){}}),
     setTimeout:()=>0,clearTimeout(){},matchMedia:()=>({matches:false}),requestAnimationFrame(){},performance,structuredClone,crypto,

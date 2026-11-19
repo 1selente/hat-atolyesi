@@ -1,5 +1,5 @@
 // Only the application shell and bundled public data. No third-party map tiles.
-const CACHE='hat-atolyesi-shell-v3.1'
+const CACHE='hat-atolyesi-shell-v3.2'
 const scope=new URL(self.registration.scope)
 const allowed=url=>{const u=new URL(url);return u.origin===scope.origin&&u.pathname.startsWith(scope.pathname)&&!u.pathname.includes('/@vite/')&&!u.pathname.includes('/node_modules/')}
 const staticAsset=url=>allowed(url)&&/\/assets\/|manifest\.webmanifest$|icon\.svg$|neighborhoods-2025\.json$/.test(url)
@@ -28,7 +28,7 @@ self.addEventListener('message',event=>{
 self.addEventListener('fetch',event=>{
   const req=event.request;if(req.method!=='GET'||!allowed(req.url))return
   if(req.mode==='navigate'){
-    event.respondWith((async()=>{try{const response=await fetch(req);if(response.ok)(await caches.open(CACHE)).put(scope.href,response.clone());return response}catch{return (await caches.match(scope.href))??Response.error()}})());return
+    event.respondWith((async()=>{try{const response=await fetch(req);if(response.ok)return response}catch{}return (await (await caches.open(CACHE)).match(scope.href))??Response.error()})());return
   }
   if(!staticAsset(req.url))return
   event.respondWith((async()=>{const cache=await caches.open(CACHE),old=await cache.match(req);if(old)return old;const response=await fetch(req);if(response.ok)await cache.put(req,response.clone());return response})())

@@ -47,6 +47,17 @@ Yönetim → Şirket kimliği ve gerçekçilik içinden gelişmiş personel, ene
 
 Eski sürüm 1–3 kayıtları çalışır. Ayrıntılı araç/şantiye alanları gerektiğinde oluşur. Nüfus kayıtları gerçek kaynaklıdır; yolcu sayıları, trafik yoğunluğu, inşaat süreleri ve arıza oranları oyun tahminidir. Tüm Türkiye'nin mahalleleri ya da canlı trafik verisi değildir.
 
+## Sürüm 3.2: Güvenli kayıt ve sürdürülebilir işletme
+
+- Gelişmiş gerçekçilikte bağlantısız bölgelerin, kapalı hatların ve sefer yapılmayan saatlerin tahmini ulaşım talebi artık görünür. Bağlantılı talep ayrı hesaplanır; hizmet kalitesi yalnızca hizmet sunulan yolculuklara göre ölçülür. Akış haritasında ağırlıklı olarak bağlantısız koridorlar turuncu görünür.
+- Arızalar onarılana kadar sürer; her aracın son 12 arıza, bakım ve onarım olayı saklanır. Hat başına otomatik bakım eşiği seçilebilir. Sistem arızalara öncelik verir, son çalışabilir aracı önleyici bakıma almaz ve giderleri muhasebeye işler.
+- Her depo kendi atölye kapasitesini kullanır (atölye başına dört araç); teknisyenler şirket genelinde paylaşılır. Yönetim ekranı doluluğu gösterir. Fırtınada kapalı vapurlar diğer hatların sürücülerini rezerve etmez.
+- Sefer yokluğu şikâyeti eklenmiştir; en yoğun 50 şikâyetin dışında kalan açık şikâyetler yanlışlıkla çözülmüş sayılmaz.
+- 12 kayıt yuvası dolduğunda manuel yedekler silinmez. Yuva silme açık onay ister. Ana kayıt okunamazsa en yeni geçerli şehir yedeği açılır ve bozuk veri dışa aktarılmak üzere korunur. Başka sekmede değişmiş veya yazılamayan kayıtların üzerine otomatik yazılmaz.
+- Çevrimdışı paket, bir sonraki sürümün bütün dosyaları kurulana kadar kendi tutarlı uygulama kabuğunu korur.
+
+Kayıt biçimi önceki sürümlerle uyumludur; ücretli servis veya yeni API anahtarı gerekmez.
+
 ### Mahalle veri paketi
 
 Kaynak: **TÜİK, Adrese Dayalı Nüfus Kayıt Sistemi (2025)**. Konumlar: **© OpenStreetMap katkıcıları**, [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/). Derleme: [Topografya Açık Veri, mahalle verileri](https://github.com/topografya/veri/tree/yayin/mahalle), OSM 2026-11-01 kesiti. Ayrı, indirilebilir türetilmiş veri paketi `public/neighborhoods-2025.json` dosyasında ODbL 1.0 kapsamında sunulur; kaynak dosya yolları ve blob SHA değerleri de pakette yer alır. Konumu olmayan kayıtlar dahil edilmez, sınırları temsil eden noktalar veya yayımlanmış OSM noktaları kullanılır.

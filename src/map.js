@@ -4,7 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { accessibleColors, availableDistricts, cities, corridors, modes, vehicleModels } from './cities.js'
 import { active, distance, estimate, WALK_RADIUS } from './model.js'
 import {linePath,pointDistricts,profile,gameCity,companyOf,serviceStopIds} from './advanced.js'
-import {roster} from './detail.js'
+import {roster,unitReady} from './detail.js'
 
 setWorkerUrl(workerUrl)
 
@@ -16,7 +16,7 @@ const tint = ['get', 'color']
 const sources = ['districts', 'coverage', 'reference', 'depots', 'lines', 'stations', 'draft', 'vehicles', 'draft-preview','flow']
 const lineTint=['case',['boolean',['get','heat'],false],['interpolate',['linear'],['get','load'],0,'#2e9e6a',.7,'#f2b705',1,'#d1342b'],tint]
 const layers = [
-  {id:'passenger-flow',source:'flow',type:'line',paint:{'line-color':'#8c4ab4','line-opacity':.35,'line-width':['interpolate',['linear'],['get','demand'],0,1,5000,4,25000,10]}},
+  {id:'passenger-flow',source:'flow',type:'line',paint:{'line-color':['case',['>',['get','gap'],0.5],'#c66b24','#8c4ab4'],'line-opacity':.35,'line-width':['interpolate',['linear'],['get','demand'],0,1,5000,4,25000,10]}},
   {id:'reference-lines',source:'reference',type:'line',paint:{'line-color':'#7f9299','line-width':3,'line-dasharray':[2,2],'line-opacity':.75}},
   {id:'coverage-area',source:'coverage',type:'fill',paint:{'fill-color':'#28a778','fill-opacity':.13,'fill-outline-color':'#277c66'}},
   { id: 'district-halo', source: 'districts', type: 'circle', paint: {
@@ -148,7 +148,7 @@ export function makeMap(container, city, selectPoint, report) {
       feature('Point', [lng, lat], { name, weight:weight*(snapshot.growth[name]??1),landmark:['airport','mall','school'].includes(kind),unserved:walk&&!coverageByName.get(name) })) : [])
     const anchors=new Map(cities[snapshot.city].districts.map(d=>[d[0],d.slice(1,3)]))
     setSource('reference',reference&&!companyOf(snapshot).customCity?(corridors[snapshot.city]??[]).map(([name,,...stops])=>feature('LineString',stops.map(n=>anchors.get(n)).filter(Boolean),{name})):[])
-    setSource('flow',flow?(projection?.flows??[]).slice(0,30).map(f=>feature('LineString',[f.fromPosition,f.toPosition],{demand:f.demand})):[])
+    setSource('flow',flow?(projection?.flows??[]).slice(0,30).map(f=>feature('LineString',[f.fromPosition,f.toPosition],{demand:f.demand,gap:(f.unconnectedDemand??0)/Math.max(1,f.demand)})):[])
     const activeIds=new Set(snapshot.lines.filter(l=>active(l,snapshot.day)).flatMap(serviceStopIds))
     setSource('coverage',walk?snapshot.stations.filter(s=>activeIds.has(s.id)).map(s=>feature('Polygon',[circle(s.position)])):[])
     setSource('depots', snapshot.depots.map((d) => feature('Point', d.position, { name: d.name })))
@@ -165,7 +165,7 @@ export function makeMap(container, city, selectPoint, report) {
     paths = snapshot.lines.filter((l) => active(l, snapshot.day)).map((line) => {
       const coordinates = linePath(line,stationById)
       const segments = coordinates.slice(1).map((p, i) => distance(coordinates[i], p))
-      const ready=roster(line,snapshot.day).filter(u=>u.failedUntil<=snapshot.day&&u.maintenanceUntil<=snapshot.day).sort((a,b)=>Number(a.reserve)-Number(b.reserve)||a.number-b.number)
+      const ready=roster(line,snapshot.day).filter(u=>unitReady(u,snapshot.day)).sort((a,b)=>Number(a.reserve)-Number(b.reserve)||a.number-b.number)
       return { line, coordinates, segments, total: segments.reduce((a, b) => a + b, 0),ready }
     })
     animate(snapshot.minute)
@@ -262,7 +262,7 @@ function makeSchematic(container,city,selectPoint){
   const pos=(x,y)=>{const [w,s,e,n]=(state?gameCity(state):cities[city]).bounds;return [w+(x-30)/740*(e-w),n-(y-30)/540*(n-s)]}
   const dot=(position,attrs,parent)=>{const [cx,cy]=xy(position);return node('circle',{cx,cy,...attrs},parent)}
   const path=(coordinates,attrs)=>node('polyline',{points:coordinates.map(p=>xy(p).join(',')).join(' '),fill:'none',...attrs})
-  function draw(){if(!state)return;svg.replaceChildren();const byId=new Map(state.stations.map(s=>[s.id,s]));if(options.flow)for(const f of (options.projection?.flows??[]).slice(0,30))path([f.fromPosition,f.toPosition],{stroke:'#9356a6','stroke-width':Math.min(8,1+f.demand/3000),opacity:.35});if(options.showDemand)for(const [name,x,y,w] of pointDistricts(state)){const el=dot([x,y],{r:3+w/2,fill:'#a84c35',opacity:.65});el.addEventListener('click',e=>{e.stopPropagation();selectPoint([x,y],undefined,name)})}
+  function draw(){if(!state)return;svg.replaceChildren();const byId=new Map(state.stations.map(s=>[s.id,s]));if(options.flow)for(const f of (options.projection?.flows??[]).slice(0,30))path([f.fromPosition,f.toPosition],{stroke:(f.unconnectedDemand??0)>f.demand*.5?'#c66b24':'#9356a6','stroke-width':Math.min(8,1+f.demand/3000),opacity:.35});if(options.showDemand)for(const [name,x,y,w] of pointDistricts(state)){const el=dot([x,y],{r:3+w/2,fill:'#a84c35',opacity:.65});el.addEventListener('click',e=>{e.stopPropagation();selectPoint([x,y],undefined,name)})}
     for(const l of state.lines){const el=path(linePath(l,byId),{stroke:options.accessible?accessibleColors[(l.number-1)%accessibleColors.length]:profile(l).brandColor||l.color,'stroke-width':l.id===options.selected?6:4,'stroke-dasharray':l.readyAt>state.day?'5 4':'none'});el.addEventListener('click',e=>{e.stopPropagation();selectPoint(byId.get(l.stops[0]).position,undefined,undefined,l.id)})}
     for(const d of state.depots)dot(d.position,{r:6,fill:'#186470',stroke:'#fff','stroke-width':2});for(const s of state.stations){const el=dot(s.position,{r:6,fill:'#fff',stroke:'#18282a','stroke-width':2});el.addEventListener('click',e=>{e.stopPropagation();selectPoint(s.position,s.id)});const [x,y]=xy(s.position);const t=node('text',{x:x+8,y:y-8,fill:'currentColor','font-size':10});t.textContent=s.name}
     if(options.draft){const coordinates=options.draft.stops.map(s=>s.position);if(coordinates.length>1)path(coordinates,{stroke:'#df8a55','stroke-width':4,'stroke-dasharray':'5 3'});for(const p of coordinates)dot(p,{r:5,fill:'#df8a55'})}

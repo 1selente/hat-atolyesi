@@ -6,14 +6,15 @@ import {
 import { makeMap } from './map.js'
 import {addContract,createCustomCity,gameCity,closestPoint,importDistricts,recordTransaction,serviceStopIds,addDistrict,assignedFleet,reservedOrders,companyOf,configureLine,depotProfile,edgeKey,finance,hire,maintenance,orderVehicles,pointDistricts,profile,rescue,scenarioConfig,upgradeDepot,upgradeStation} from './advanced.js'
 import {renderLineAdvanced,renderManagement,stationUpgradeButtons} from './management.js'
-import {syncRoster,syncCondition,maintainUnit,setShifts,setLineShifts,setConstruction,accelerateConstruction,neighborhoodRows,simplifyRoute,ROAD_CLASSES} from './detail.js'
+import {syncRoster,syncCondition,maintainUnit,setShifts,setLineShifts,setConstruction,accelerateConstruction,neighborhoodRows,simplifyRoute,ROAD_CLASSES,setAutoMaintenance,unitBroken} from './detail.js'
+import {gameKey,recoveryKey,readSlots,storeSlot,removeSlot,writeGame,recoverGame,MAX_SAVE_BYTES} from './saves.js'
 import './style.css'
 
 const $ = (id) => document.getElementById(id)
 const html = (value) => String(value).replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[c])
-const key = (city) => `hat-atolyesi:v1:${city}`
+const key = gameKey
 const number = new Intl.NumberFormat('tr-TR')
 const decimal = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 1 })
 const money = (value) => `₺${decimal.format(value)} Mn`
@@ -23,6 +24,9 @@ const panel = $('panel')
 const dialog = $('dialog')
 let storageWorks = true
 let toastTimer
+const expectedSaves=new Map(),blockedSaves=new Set()
+let saveWarning=''
+const saveStorage={getItem:k=>localStorage.getItem(k),setItem:(k,v)=>localStorage.setItem(k,v)}
 
 function read(keyName) {
   try {
@@ -42,16 +46,13 @@ function write(keyName, value) {
 }
 
 function load(city) {
-  const raw = read(key(city))
-  if (!raw) return newGame(city)
-  try {
-    const saved = parseSave(raw)
-    if (saved.city !== city) throw new Error('Kayıt şehri uyuşmuyor.')
-    return saved
-  } catch {
-    notify('Yerel kayıt açılamadı. Yeni oyun başlatıldı.')
-    return newGame(city)
-  }
+  const result=recoverGame(saveStorage,city,parseSave,newGame)
+  expectedSaves.set(city,result.raw)
+  if(result.blocked)blockedSaves.add(city);else blockedSaves.delete(city)
+  if(result.status==='recovered')notify('Ana kayıt açılamadı; son geçerli yedek açıldı. Orijinal dosya korundu.')
+  if(result.status==='corrupt')notify('Kayıt okunamadı. Orijinal veri korunuyor; kayıt menüsünü kontrol et.')
+  if(result.blocked){storageWorks=false;saveWarning='Orijinal kayıt güvenle arşivlenemedi; otomatik üzerine yazma durduruldu.'}
+  return result.state
 }
 
 let city = read('hat-atolyesi:city')
@@ -86,8 +87,13 @@ function notify(message) {
 }
 
 function persist() {
-  write(key(state.city), JSON.stringify(state))
-  write('hat-atolyesi:city', state.city)
+  if(blockedSaves.has(state.city))return false
+  const result=writeGame(saveStorage,state.city,JSON.stringify(state),expectedSaves.get(state.city)??null)
+  if(result.ok){expectedSaves.set(state.city,result.raw);storageWorks=true;saveWarning='';write('hat-atolyesi:city',state.city);return true}
+  storageWorks=false
+  const message=result.reason==='conflict'?'Kayıt başka bir sekmede değişti; otomatik yazma durdu. JSON indirerek ilerlemeni koru.':'Kayıt alanına yazılamadı; JSON indirerek ilerlemeni koru.'
+  if(saveWarning!==message){saveWarning=message;notify(message)}
+  return false
 }
 
 function clock() {
@@ -310,6 +316,7 @@ function renderPanelContent() {
         <div><dt>Kalan kredi borcu</dt><dd>${money(state.loan)}</dd></div>
         <div><dt>Yolcu memnuniyeti</dt><dd>${projection.rating === null ? '—' : `%${projection.rating}`}</dd></div>
         <div><dt>Günlük karşılanmayan talep</dt><dd>${number.format(projection.demand - projection.riders)}</dd></div>
+        <div><dt>Bağlantı bekleyen tahmini talep</dt><dd>${number.format(projection.unconnectedDemand??0)}</dd></div>
       </dl>
       <p class="hint">${money(LOAN)} kredi için toplam ${money(LOAN_TOTAL)} geri ödeme yapılır. Tahsilat günde ${money(30)}.</p>
       ${button('loan', 'Kredi al', disabled(state.loan > 0))}
@@ -460,18 +467,26 @@ function advanceDay() {
   if (pending) return
   if(companyOf(state).bankrupt&&!companyOf(state).freeplay){setSpeed(0);return notify('Şirket iflas durumunda. Yönetimden kurtarma veya serbest oyun seç.')}
   const building = state.lines.filter(l=>l.readyAt>state.day)
-  checkpoint('Önceki gün',true)
+  const previous=structuredClone(state)
   finishDay(state, projection)
   const opens=building.filter(l=>l.readyAt<=state.day)
   if (opens.length) notify(`${opens.map((l) => l.name).join(', ')} inşaatı tamamlandı.`)
   else if (newlyOpenedDistricts(state.city,state.day).length) notify(`Yeni talep bölgeleri açıldı: ${newlyOpenedDistricts(state.city,state.day).join(', ')}`)
   else if ((state.day-1)%30===0) notify('Şehir büyüdü! Bağlantılı bölgelerde talep daha hızlı arttı.')
   update({ save: true })
+  // Prioritize the main save over the optional rotating checkpoint.
+  if(storageWorks)checkpoint('Önceki gün',true,previous)
 }
 
 function switchCity(nextCity, loadedState) {
-  persist()
-  state = loadedState ?? load(nextCity)
+  if(!persist()){notify('Mevcut oyun kaydedilemedi. Önce JSON yedeğini indir.');return false}
+  const target=loadedState??load(nextCity)
+  if(blockedSaves.has(nextCity)){notify('Hedef şehir kaydı güvenle arşivlenemedi.');return false}
+  const saved=writeGame(saveStorage,nextCity,JSON.stringify(target),expectedSaves.get(nextCity)??null)
+  if(!saved.ok){notify('Hedef şehir kaydedilemedi; mevcut oyun korundu.');return false}
+  expectedSaves.set(nextCity,saved.raw)
+  state = target
+  write('hat-atolyesi:city',state.city)
   projection = emptyProjection()
   selected = state.lines[0]?.id
   draft = null
@@ -480,7 +495,8 @@ function switchCity(nextCity, loadedState) {
   tab = 'lines'
   speed = 0
   map.showCity(state.city)
-  update({ save: true })
+  update({ calculate: true })
+  return true
 }
 
 const actions = {
@@ -523,7 +539,7 @@ const actions = {
   'accelerate'(){const l=currentLine();if(accelerateConstruction(state,l)){recordTransaction(state,'İnşaat hızlandırma',-40,l.name);update({save:true})}},
   'upgrade-depot'(el){const d=state.depots.find(x=>x.id===el.dataset.depot);if(d&&upgradeDepot(state,d))update({save:true});else notify('Depo geliştirilemedi.')},
   'maintain'(){if(maintenance(state,currentLine())){notify('Araçlar bakıma alındı.');update({save:true})}else notify('Bakım başlatılamadı.')},
-  'repair'(){const l=currentLine(),p=profile(l);if(l.units){const u=l.units.find(u=>u.failedUntil>state.day&&u.maintenanceUntil<=state.day);if(u){const cost=maintainUnit(state,l,u.number,true);if(cost){recordTransaction(state,'Araç onarımı',-cost,l.name);return update({save:true})}}return notify('Onarım için teknisyen, atölye ve bütçe gerekli.')}if(p.failedUntil>state.day&&state.cash>=15){state.cash-=15;l.operations={...p,failedUntil:0};update({save:true})}else notify('Kurtarma için bütçe veya arıza gerekli.')},
+  'repair'(){const l=currentLine(),p=profile(l);if(l.units){const u=l.units.find(u=>unitBroken(u,state.day)&&u.maintenanceUntil<=state.day);if(u){const cost=maintainUnit(state,l,u.number,true);if(cost){recordTransaction(state,'Araç onarımı',-cost,l.name);return update({save:true})}}return notify('Onarım için teknisyen, atölye ve bütçe gerekli.')}if(p.failedUntil>state.day&&state.cash>=15){state.cash-=15;l.operations={...p,failedUntil:0};update({save:true})}else notify('Kurtarma için bütçe veya arıza gerekli.')},
   'unit-service'(el){const l=currentLine(),cost=maintainUnit(state,l,Number(el.dataset.unit),el.dataset.repair==='true');if(cost){recordTransaction(state,'Araç bakımı',-cost,l.name);update({save:true})}else notify('İşlem için bütçe, arıza durumu ve uygun atölyeyi kontrol et.')},
   'automatic-shifts'(){delete state.company.shifts;update({save:true});notify('Otomatik vardiya düzeni etkin.')},
   async 'neighborhood-import'(el){const snapshot=state;const limit=Number(el.closest('form').elements.limit.value);el.disabled=true;try{const response=await fetch(new URL('./neighborhoods-2025.json',location.href),{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('Veri paketi açılamadı');const data=await response.json();if(state!==snapshot)return;const c=companyOf(state);if(c.customCity)throw Error('Özel şehirde hazır mahalleler kullanılamaz.');const rows=neighborhoodRows(data,state.city,gameCity(state).bounds,Math.min(limit,100-c.customDistricts.length),[...pointDistricts(state).map(d=>d[0]),...cities[state.city].districts.map(d=>d[0])]);if(!rows.length)throw Error('Yeni mahalle yok veya bölge sınırına ulaşıldı.');if(!importDistricts(state,rows))throw Error('Veri doğrulanamadı.');update({save:true});notify(rows.length+' gerçek nüfuslu mahalle eklendi.')}catch(e){notify(e.message||'Mahalle paketi açılamadı.')}finally{el.disabled=false}},
@@ -549,6 +565,7 @@ function formCommand(name,data){
   if(name==='waypoint')return addWaypoint(l,get('edge'),[int('lng'),int('lat')])
   if(name==='route-import'){try{const points=simplifyRoute(JSON.parse(get('geojson')),gameCity(state).bounds),[a,b]=get('edge').split('|'),st=new Map(state.stations.map(s=>[s.id,s]));if(!points||!st.has(a)||!st.has(b))throw Error();const first=st.get(a).position,last=st.get(b).position;const direct=distance(points[0],first)+distance(points.at(-1),last),reverse=distance(points[0],last)+distance(points.at(-1),first);if(Math.min(direct,reverse)>1.5)throw Error();const ordered=direct<=reverse?points:[...points].reverse();const middle=ordered.slice(1,-1);return applyLine(l,{waypoints:{...p.waypoints,[edgeKey(a,b)]:a<b?middle:middle.reverse()}})}catch{return notify('GeoJSON güzergâhı geçersiz veya uçları seçilen duraklara uzak.')}}
   if(name==='line-shifts')ok=setLineShifts(state,l,[int('morning'),int('noon'),int('evening')])
+  else if(name==='auto-maintenance')ok=setAutoMaintenance(l,int('threshold'))
   else if(name==='shifts')ok=setShifts(state,[int('morning'),int('noon'),int('evening')])
   else if(name==='construction')ok=setConstruction(state,l,int('crew'),data.has('paused'))
   else if(name==='road-class'){ok=Object.hasOwn(ROAD_CLASSES,get('road'));if(ok)l.roadClass=get('road')}
@@ -560,8 +577,8 @@ function formCommand(name,data){
   else if(name==='contract')ok=addContract(state,get('district'))
   else if(name==='district'){const d={name:get('name').trim(),lng:int('lng'),lat:int('lat'),weight:int('weight'),kind:get('kind')};if(get('population')!=='')d.population=int('population');if(get('source').trim())d.source=get('source').trim();ok=addDistrict(state,d)}
   else if(name==='district-import'){try{ok=importDistricts(state,JSON.parse(get('json')))}catch{ok=false}}
-  else if(name==='custom-city'){const fresh=newGame(state.city);if(!createCustomCity(fresh,{name:get('name').trim(),lng:int('lng'),lat:int('lat'),radius:int('radius'),population:int('population'),budget:int('budget')}))return notify('Şehir bilgileri geçersiz.');if(!window.confirm('Mevcut kayıt yedeklenip özel şehir açılacak. Devam?'))return;checkpoint('Özel şehir öncesi');switchCity(state.city,fresh);return}
-  else if(name==='scenario'){if(!window.confirm('Mevcut oyun yedeklenip bu şehirde yeni senaryo başlatılacak. Devam?'))return;checkpoint(`Senaryo öncesi, gün ${state.day}`);const fresh=newGame(state.city);fresh.company.customCity=structuredClone(c.customCity);fresh.company.customDistricts=structuredClone(c.customDistricts);scenarioConfig(fresh,get('scenario'));fresh.company.realism=get('scenario')!=='sandbox';fresh.company.staff.driver=10;switchCity(state.city,fresh);return}
+  else if(name==='custom-city'){const fresh=newGame(state.city);if(!createCustomCity(fresh,{name:get('name').trim(),lng:int('lng'),lat:int('lat'),radius:int('radius'),population:int('population'),budget:int('budget')}))return notify('Şehir bilgileri geçersiz.');if(!window.confirm('Mevcut kayıt yedeklenip özel şehir açılacak. Devam?'))return;if(!checkpoint('Özel şehir öncesi'))return;switchCity(state.city,fresh);return}
+  else if(name==='scenario'){if(!window.confirm('Mevcut oyun yedeklenip bu şehirde yeni senaryo başlatılacak. Devam?'))return;if(!checkpoint(`Senaryo öncesi, gün ${state.day}`))return;const fresh=newGame(state.city);fresh.company.customCity=structuredClone(c.customCity);fresh.company.customDistricts=structuredClone(c.customDistricts);scenarioConfig(fresh,get('scenario'));fresh.company.realism=get('scenario')!=='sandbox';fresh.company.staff.driver=10;switchCity(state.city,fresh);return}
   else return false
   if(ok){update({save:true});notify('İşlem tamamlandı.')}else notify('İşlem yapılamadı; bütçe, sınır veya verileri kontrol et.')
   return true
@@ -658,14 +675,15 @@ $('dialog-body').addEventListener('change',e=>{
   persist();update()
 })
 
-function snapshots(){try{return JSON.parse(read(`hat-atolyesi:slots:${state.city}`)||'[]').filter(x=>x&&typeof x.json==='string'&&typeof x.id==='string'&&typeof x.name==='string')}catch{return []}}
-function checkpoint(name,automatic=false){const items=snapshots().filter(x=>!automatic||!x.automatic);const entry={id:crypto.randomUUID(),name:name.slice(0,80),automatic,day:state.day,json:JSON.stringify(state)};items.unshift(entry);const limited=items.slice(0,12);try{localStorage.setItem(`hat-atolyesi:slots:${state.city}`,JSON.stringify(limited));return true}catch{if(!automatic)notify('Kayıt alanı dolu; JSON indirerek yedekle.');return false}}
+function snapshots(){try{return readSlots(localStorage,state.city)}catch{return []}}
+function checkpoint(name,automatic=false,source=state){const entry={id:crypto.randomUUID(),name:name.slice(0,80),automatic,day:source.day,json:JSON.stringify(source)};const result=storeSlot(saveStorage,source.city,entry);if(!result.ok&&!automatic)notify(result.reason==='full'?'12 kayıt yuvası dolu; bir yedeği indirip sil veya mevcut oyunu JSON indir.':'Yedek oluşturulamadı; mevcut kayıt değiştirilmedi.');return result.ok}
+function prepareReplacement(source){if(source.city===state.city)return checkpoint('Değişiklik öncesi');try{const raw=localStorage.getItem(key(source.city));if(raw!==null){const old=parseSave(raw);if(old.city!==source.city||!checkpoint('İçe aktarma öncesi',false,old))return false}expectedSaves.set(source.city,raw);blockedSaves.delete(source.city);return true}catch{notify('Hedef şehir kaydı güvenle yedeklenemedi.');return false}}
 function saveDialog(){const records=snapshots();openDialog('Oyun kaydı', `<div class="stack">
   <p>${storageWorks ? 'Her şehir bu tarayıcıda ayrı ve otomatik kaydedilir.' : 'Tarayıcı depolaması kullanılamıyor. Oyunu saklamak için dosyayı indir.'}</p>
   <div class="row wrap">${button('export', 'JSON indir', 'class="primary"')}${button('import', 'JSON aç')}</div>
   <label class="field">Yeni kayıt adı<input id="snapshot-name" maxlength="80" placeholder="Örn. Metro planı A"></label>${button('snapshot','Manuel kayıt oluştur')}
-  <h3 class="heading">Kayıt yuvaları</h3>${records.map(r=>`<div class="stack saved-slot"><strong>${html(r.name)}</strong><span class="hint">Gün ${html(r.day)} ${r.automatic?'· otomatik':''}</span><div class="row wrap">${button('restore','Geri yükle',`data-slot="${html(r.id)}"`)}${button('copy-slot','Kopyala',`data-slot="${html(r.id)}"`)}${button('export-slot','İndir',`data-slot="${html(r.id)}"`)}</div></div>`).join('')||'<p class="hint">Henüz kayıt yok.</p>'}
-  <p class="hint">En son 12 kayıt yuvası tarayıcıda tutulur. Daha fazla kayıt için JSON dosyası indir.</p></div>`)}
+  <h3 class="heading">Kayıt yuvaları</h3>${records.map(r=>`<div class="stack saved-slot"><strong>${html(r.name)}</strong><span class="hint">Gün ${html(r.day)} ${r.automatic?'· otomatik':''}</span><div class="row wrap">${button('restore','Geri yükle',`data-slot="${html(r.id)}"`)}${button('copy-slot','Kopyala',`data-slot="${html(r.id)}"`)}${button('export-slot','İndir',`data-slot="${html(r.id)}"`)}${button('delete-slot','Sil',`data-slot="${html(r.id)}"`)}</div></div>`).join('')||'<p class="hint">Henüz kayıt yok.</p>'}
+  <p class="hint">En fazla 12 yuva. Manuel yedekler otomatik olarak silinmez. ${read(recoveryKey(state.city))?button('export-recovery','Kurtarma dosyasını indir'):''} ${blockedSaves.has(state.city)?button('export-raw','Orijinal kayıt verisini indir'):''} ${html(saveWarning)}</p></div>`)}
 $('save').addEventListener('click',saveDialog)
 
 $('dialog-body').addEventListener('click', (event) => {
@@ -680,7 +698,9 @@ $('dialog-body').addEventListener('click', (event) => {
   }
   if (action === 'import') $('import').click()
   if(action==='snapshot'){const name=$('snapshot-name')?.value.trim()||`Gün ${state.day}`;if(checkpoint(name)){dialog.close();saveDialog()}}
-  if(['restore','copy-slot','export-slot'].includes(action)){const slot=snapshots().find(s=>s.id===btn.dataset.slot);if(!slot)return;if(action==='export-slot')return download(slot.json,`hat-atolyesi-${state.city}-${slot.day}.json`);try{const saved=parseSave(slot.json);if(action==='restore'){if(!window.confirm('Bu kayıt geri yüklensin mi? Mevcut oyun yedeklenecek.'))return;checkpoint(`Geri yükleme öncesi · ${state.day}`);switchCity(saved.city,saved);dialog.close();notify('Kayıt geri yüklendi.')}else{const records=snapshots();records.unshift({...slot,id:crypto.randomUUID(),name:`${slot.name} (kopya)`.slice(0,80),automatic:false});write(`hat-atolyesi:slots:${state.city}`,JSON.stringify(records.slice(0,12)));dialog.close();saveDialog()}}catch{notify('Kayıt doğrulanamadı.')}}
+  if(action==='export-recovery'){const raw=read(recoveryKey(state.city));if(raw)return download(raw,`hat-atolyesi-${state.city}-kurtarma.json`)}
+  if(action==='export-raw'){const raw=read(key(state.city));if(raw!==null)return download(raw,`hat-atolyesi-${state.city}-orijinal.json`)}
+  if(['restore','copy-slot','export-slot','delete-slot'].includes(action)){const slot=snapshots().find(s=>s.id===btn.dataset.slot);if(!slot)return;if(action==='export-slot')return download(slot.json,`hat-atolyesi-${state.city}-${slot.day}.json`);if(action==='delete-slot'){if(!window.confirm('Bu kayıt yuvası silinsin mi?'))return;if(removeSlot(localStorage,state.city,slot.id)){dialog.close();saveDialog()}else notify('Kayıt silinemedi.');return}try{const saved=parseSave(slot.json);if(action==='restore'){if(!window.confirm('Bu kayıt geri yüklensin mi? Mevcut oyun yedeklenecek.'))return;if(!prepareReplacement(saved)||!switchCity(saved.city,saved))return;dialog.close();notify('Kayıt geri yüklendi.')}else{const result=storeSlot(localStorage,state.city,{...slot,id:crypto.randomUUID(),name:`${slot.name} (kopya)`.slice(0,80),automatic:false});if(!result.ok)return notify('Kopya oluşturulamadı; kayıt yuvalarını kontrol et.');dialog.close();saveDialog()}}catch{notify('Kayıt doğrulanamadı.')}}
 })
 
 $('import').addEventListener('change', async (event) => {
@@ -688,9 +708,10 @@ $('import').addEventListener('change', async (event) => {
   event.target.value = ''
   if (!file) return
   try {
-    if (file.size > 2_000_000) throw new Error('Kayıt 2 MB boyut sınırını aşıyor.')
+    if (file.size > MAX_SAVE_BYTES) throw new Error('Kayıt 4 MB boyut sınırını aşıyor.')
     const imported = parseSave(await file.text())
-    switchCity(imported.city, imported)
+    if(!window.confirm('Bu şehirdeki mevcut kayıt yedeklenip seçilen dosya açılacak. Devam?'))return
+    if(!prepareReplacement(imported)||!switchCity(imported.city,imported))return
     dialog.close()
     notify('Oyun kaydı açıldı.')
   } catch {
@@ -705,7 +726,7 @@ document.querySelectorAll('[data-tab]').forEach((el) => el.addEventListener('cli
   updateOverview()
   renderPanel()
 }))
-$('city').addEventListener('change', (event) => switchCity(event.target.value))
+$('city').addEventListener('change', (event) => {if(!switchCity(event.target.value))event.target.value=state.city})
 $('demand').addEventListener('change', syncMap)
 $('heat').addEventListener('change',syncMap)
 $('walk').addEventListener('change',syncMap)

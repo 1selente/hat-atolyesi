@@ -175,6 +175,7 @@ export function projectDay(state) {
     / Math.max(1,districts.reduce((sum, d) => sum + d.weight, 0)))
   let riders = 0
   let demand = 0
+  let unconnectedDemand=0
   let travel = 0
   let fareRevenue=0,transfers=0,alternative=0
   const flowMap=new Map(),passengerGroups={worker:0,student:0,tourist:0,senior:0,shopping:0,other:0}
@@ -187,7 +188,9 @@ export function projectDay(state) {
   // Reuse route searches across hours with identical traffic/schedule profiles.
   const profiles = new Map()
   const servedDistricts = districts.filter(d => d.stop)
+  const districtIndex=new Map(districts.map((d,i)=>[d,i])),demandScale=gameCity(state).demandScale
   const directional=operating.some(l=>profile(l).ring&&profile(l).oneway)
+  const pairKey=(a,b)=>directional?districtIndex.get(a)+':'+districtIndex.get(b):[districtIndex.get(a),districtIndex.get(b)].sort((x,y)=>x-y).join(':')
   for (const [i,hour] of HOURS.entries()) {
     const peak = hour>=7&&hour<10 || hour>=16&&hour<19
     const schedules = new Map(operating.map(l=>[l.id,service(l,stations,hour,state,shared)]))
@@ -219,24 +222,40 @@ export function projectDay(state) {
           const minutes=settled.get(b.stop)+(a.walk+b.walk)*12
           const km=distance(a.position,b.position),transferCount=Math.max(0,used.size-1),mode=state.lines.find(l=>l.id===[...used][0])?.mode
           const tripFare=actualFare(state,{km,transfers:transferCount,mode,kind:a.kind==='school'||b.kind==='school'?'school':a.kind})
-          const potential=a.weight*b.weight*155/(1+(minutes+(company.realism?transferCount*4:0))/34)*((DEFAULT_FARE/Math.max(10,tripFare))**.38)*gameCity(state).demandScale*(directional?.5:1)
+          const potential=a.weight*b.weight*155/(1+(minutes+(company.realism?transferCount*4:0))/34)*((DEFAULT_FARE/Math.max(10,tripFare))**.38)*demandScale*(directional?.5:1)
           const competition=passengerCompetition(state,minutes,km,[a.kind,b.kind]);const base=potential*competition
           pairs.push({a,b,used:[...used],minutes,base,alternative:potential-base,tripFare,transferCount,km})
         }
       }
-      profiles.set(key,pairs)
+      const gaps=[]
+      if(company.realism){
+        const connected=new Set(pairs.map(p=>pairKey(p.a,p.b)))
+        for(const [index,a] of districts.entries())for(const b of directional?districts:districts.slice(index+1)){
+          if(a===b||a.stop&&a.stop===b.stop||connected.has(pairKey(a,b)))continue
+          const km=distance(a.position,b.position)
+          if(km<.3)continue
+          // Conservative potential transit demand, not measured ridership.
+          const base=a.weight*b.weight*155/(1+(20+km*2.1)/34)*elasticity*demandScale*(directional?.5:1)*.35
+          gaps.push({a,b,base})
+        }
+      }
+      profiles.set(key,{pairs,gaps})
     }
     const loads = new Map(operating.map(l=>[l.id,0]))
-    const trips = profiles.get(key).map(pair=>{
-      const weekend=(state.day-1)%7>=5
-      const factor = (d) => d.kind==='school' ? (weekend?.45:hour<10||hour>=14&&hour<17?1.18:.8) : d.kind==='mall' ? (hour>=12&&hour<21?(weekend?1.45:1.15):.75) : d.kind==='work'&&weekend?.75:1
-      const modifiers=(factor(pair.a)*seasonalFactor(state,pair.a.kind,hour)*eventFactor(state,pair.a.name,hour)+factor(pair.b)*seasonalFactor(state,pair.b.kind,hour)*eventFactor(state,pair.b.name,hour))/2
+    const weekend=(state.day-1)%7>=5
+    const factor = (d) => d.kind==='school' ? (weekend?.45:hour<10||hour>=14&&hour<17?1.18:.8) : d.kind==='mall' ? (hour>=12&&hour<21?(weekend?1.45:1.15):.75) : d.kind==='work'&&weekend?.75:1
+    const factors=new Map(districts.map(d=>[d,factor(d)*seasonalFactor(state,d.kind,hour)*eventFactor(state,d.name,hour)]))
+    const modifier=pair=>(factors.get(pair.a)+factors.get(pair.b))/2
+    const trips = profiles.get(key).pairs.map(pair=>{
+      const modifiers=modifier(pair)
       const requested = pair.base*curve[i]/sum*modifiers
       alternative+=pair.alternative*curve[i]/sum*modifiers
       for(const id of pair.used) loads.set(id,loads.get(id)+requested)
       return {...pair,requested}
     })
-    let sliceRiders=0, sliceDemand=0, towardsWork=0, towardsHome=0
+    let sliceRiders=0, sliceDemand=0, towardsWork=0, towardsHome=0,sliceGap=0
+    const recordFlow=(pair,requested,count,gap=0)=>{const key=pairKey(pair.a,pair.b),old=flowMap.get(key)??{from:pair.a.name,to:pair.b.name,fromPosition:pair.a.position,toPosition:pair.b.position,demand:0,riders:0,unconnectedDemand:0};old.demand+=requested;old.riders+=count;old.unconnectedDemand+=gap;flowMap.set(key,old)}
+    for(const pair of profiles.get(key).gaps){const requested=pair.base*curve[i]/sum*modifier(pair);sliceGap+=requested;recordFlow(pair,requested,0,requested)}
     const carried=new Map(operating.map(l=>[l.id,0]))
     const stationLoads=new Map();if(company.realism)for(const trip of trips)for(const stop of [trip.a.stop,trip.b.stop])stationLoads.set(stop,(stationLoads.get(stop)??0)+trip.requested)
     for(const trip of trips) {
@@ -247,7 +266,7 @@ export function projectDay(state) {
       fareRevenue+=count*trip.tripFare/1e6;transfers+=count*trip.transferCount
       const kind=trip.a.kind==='school'||trip.b.kind==='school'?'student':trip.a.kind==='airport'||trip.b.kind==='airport'?'tourist':trip.a.kind==='mall'||trip.b.kind==='mall'?'shopping':trip.a.kind==='work'||trip.b.kind==='work'?'worker':'other'
       passengerGroups[kind]+=count*.92;passengerGroups.senior+=count*.08
-      const key=`${trip.a.name}|${trip.b.name}`,old=flowMap.get(key)??{from:trip.a.name,to:trip.b.name,fromPosition:trip.a.position,toPosition:trip.b.position,demand:0,riders:0};old.demand+=trip.requested;old.riders+=count;flowMap.set(key,old)
+      recordFlow(trip,trip.requested,count)
       const homeA=trip.a.kind==='home', homeB=trip.b.kind==='home'
       const direction=homeA!==homeB ? (hour<10?.8:hour>=16?.2:.5) : .5
       const aBoard=count*(homeA?direction:homeB?1-direction:.5)
@@ -255,22 +274,23 @@ export function projectDay(state) {
       if(homeA!==homeB){towardsWork+=count*direction;towardsHome+=count*(1-direction)}
       for(const id of trip.used) carried.set(id,carried.get(id)+count)
     }
-    riders+=sliceRiders; demand+=sliceDemand
-    bySlice.push({hour,riders:sliceRiders,demand:sliceDemand,towardsWork,towardsHome})
+    riders+=sliceRiders; demand+=sliceDemand+sliceGap;unconnectedDemand+=sliceGap
+    bySlice.push({hour,riders:sliceRiders,demand:sliceDemand+sliceGap,unconnectedDemand:sliceGap,towardsWork,towardsHome})
     for(const l of operating){
       const r=results[l.id], s=schedules.get(l.id), boards=loads.get(l.id), served=carried.get(l.id)
       r.boards+=boards; r.capacity+=s.capacity; r.served+=served
       r.bySlice.push({hour,boards,capacity:s.capacity,served,interval:s.interval,available:s.available})
     }
   }
-  riders=Math.round(riders); demand=Math.round(demand)
+  riders=Math.round(riders); demand=Math.round(demand);unconnectedDemand=Math.round(unconnectedDemand)
+  const connectedDemand=Math.max(0,demand-unconnectedDemand)
   const retailIncome=state.stations.filter(s=>s.shop && activeStops.has(s.id)).reduce((sum,s)=>sum+.035+(stops[s.id]??0)*.000003,0)
   const breakdown=companyExpenses(state,expense,operating,stations)
   const result={
-    riders, demand, coverage, expense:breakdown.total, results, stops, districts, bySlice,breakdown,
+    riders, demand, connectedDemand,unconnectedDemand,coverage, expense:breakdown.total, results, stops, districts, bySlice,breakdown,
     income:company.tariff==='flat'&&!company.discount&&!company.pass&&company.policy!=='student'?riders * fare / 1e6:fareRevenue, retailIncome,
     averageTravel:riders?travel/riders:0,transfers:Math.round(transfers),alternative:Math.round(alternative),passengerGroups,flows:[...flowMap.values()].sort((a,b)=>b.demand-a.demand).slice(0,100),
-    rating: demand ? Math.round(100 * (riders / demand) * Math.max(0.4, 1 - travel / Math.max(1, riders) / 135)) : null,
+    rating: connectedDemand ? Math.round(100 * Math.min(1,riders / connectedDemand) * Math.max(0.4, 1 - travel / Math.max(1, riders) / 135)) : null,
   }
   return {...result,...companyRevenue(state,result),complaints:complaintsFor(state,result)}
 }

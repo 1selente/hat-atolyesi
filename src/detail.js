@@ -9,7 +9,7 @@ const record=x=>x&&typeof x==='object'&&!Array.isArray(x)
 const suppliers={budget:1.25,balanced:1,premium:.8}
 const random=(day,id)=>{let h=day|0;for(const c of String(id))h=Math.imul(h^c.charCodeAt(0),16777619);h^=h>>>16;h=Math.imul(h,0x45d9f3b);return (h>>>0)/4294967296}
 export const SHIFT_NAMES=['Sabah 06–12','Öğle 12–18','Akşam 18–24']
-export const COMPLAINT_NAMES={crowding:'Aşırı doluluk',waiting:'Uzun bekleme',breakdown:'Araç arızası',access:'Erişilebilirlik',cleaning:'Temizlik',coverage:'Ulaşım eksikliği',security:'Güvenlik / istasyon hizmeti'}
+export const COMPLAINT_NAMES={crowding:'Aşırı doluluk',waiting:'Uzun bekleme',breakdown:'Araç arızası',access:'Erişilebilirlik',cleaning:'Temizlik',coverage:'Ulaşım eksikliği',security:'Güvenlik / istasyon hizmeti',suspension:'Sefer yok'}
 export const ROAD_CLASSES={local:'Yerel cadde',arterial:'Ana arter',priority:'Ayrılmış otobüs yolu'}
 export const shiftIndex=hour=>hour===undefined?0:clamp(Math.floor((hour-6)/6),0,2)
 
@@ -31,13 +31,16 @@ export function syncCondition(line,day){
   const units=syncRoster(line,day),p=line.operations??={}
   p.wear=units.length?units.reduce((n,u)=>n+u.wear,0)/units.length:0
   p.km=units.reduce((n,u)=>n+u.km,0)
-  p.failedUntil=Math.max(0,...units.map(u=>u.failedUntil))
+  p.failedUntil=Math.max(0,...units.map(u=>u.fault?Math.max(day+1,u.failedUntil):u.failedUntil))
   p.maintenanceUntil=Math.max(0,...units.map(u=>u.maintenanceUntil))
 }
-export const unitStatus=(unit,day)=>unit.maintenanceUntil>day?'Bakımda':unit.failedUntil>day?'Arızalı':unit.reserve?'Yedek':'Hazır'
+export const unitBroken=(unit,day)=>unit.fault===true||unit.failedUntil>day
+export const unitReady=(unit,day)=>!unitBroken(unit,day)&&unit.maintenanceUntil<=day
+export const unitStatus=(unit,day)=>unit.maintenanceUntil>day?'Bakımda':unitBroken(unit,day)?'Arızalı':unit.reserve?'Yedek':'Hazır'
+function unitEvent(unit,day,kind,cost=0){unit.events=[...(unit.events??[]),{day,kind,cost}].slice(-12)}
 export function availableUnits(line,day){
   if(!line.units)return null
-  const ready=roster(line,day).filter(u=>u.failedUntil<=day&&u.maintenanceUntil<=day)
+  const ready=roster(line,day).filter(u=>unitReady(u,day))
   return Math.min(line.fleet,ready.length)
 }
 export function shiftPlan(state){const c=state.company,drivers=c.staff.driver;return c.shifts??[drivers,drivers,drivers]}
@@ -51,26 +54,33 @@ export function setLineShifts(state,line,values){
 }
 export function driverCapacity(state,line,hour,isOperating){
   const slot=shiftIndex(hour),pool=shiftPlan(state)[slot]
-  const cap=l=>{const p=l.operations??{},schedule=(state.day-1)%7>=5?p.weekendSchedule??p.schedule:p.schedule;if(hour!==undefined&&schedule?.[hour-6]===0)return 0;return Math.min(l.fleet,l.shiftLimit?.[slot]??40,availableUnits(l,state.day)??l.fleet)}
+  const cap=l=>{const p=l.operations??{},schedule=(state.day-1)%7>=5?p.weekendSchedule??p.schedule:p.schedule;if(l.mode==='ferry'&&state.company.weather==='storm'||hour!==undefined&&schedule?.[hour-6]===0)return 0;const legacy=l.fleet-((p.failedUntil>state.day||p.maintenanceUntil>state.day)?Math.max(0,1-(p.spare??0)):0);return Math.min(l.fleet,l.shiftLimit?.[slot]??40,availableUnits(l,state.day)??Math.max(0,legacy))}
   const assigned=state.lines.filter(l=>l.number<line.number&&isOperating(l,state.day)).reduce((n,l)=>n+cap(l),0)
   return Math.min(cap(line),Math.max(0,pool-assigned))
 }
-export function maintainUnit(state,line,number,repair=false){
+export function workshopUsage(state){
+  const usage=Object.fromEntries(state.depots.map(d=>[d.id,0]));let total=0
+  for(const l of state.lines)for(const u of roster(l,state.day))if(u.maintenanceUntil>state.day){total++;const depot=u.serviceDepot||l.operations?.depot||state.depots[0]?.id;if(Object.hasOwn(usage,depot))usage[depot]++}
+  return {usage,total}
+}
+export function setAutoMaintenance(line,threshold){if(threshold!==0&&!integer(threshold,30,95))return false;line.autoMaintenance=threshold;return true}
+export function maintainUnit(state,line,number,repair=false,startDay=state.day){
   const units=roster(line,state.day),u=units.find(u=>u.number===number),p=line.operations??{}
-  if(!u||u.maintenanceUntil>state.day||repair&&u.failedUntil<=state.day)return false
-  const depot=state.depots.find(d=>d.id===p.depot),workshops=depot?(depot.facility?.workshop??1):state.depots.reduce((n,d)=>n+(d.facility?.workshop??1),0)
+  if(!u||u.maintenanceUntil>state.day||repair!==unitBroken(u,state.day))return false
+  const {usage,total}=workshopUsage(state)
+  const options=state.depots.filter(d=>!p.depot||d.id===p.depot).filter(d=>usage[d.id]<(d.facility?.workshop??1)*4)
+  const depot=options.sort((a,b)=>usage[a.id]-usage[b.id])[0]
   if(state.company.realism){
-    const active=state.lines.reduce((n,l)=>n+roster(l,state.day).filter(u=>u.maintenanceUntil>state.day).length,0)
-    if(active>=Math.min(state.company.staff.maintenance,workshops*4))return false
+    if(!depot||total>=state.company.staff.maintenance)return false
   }
   const cost=Math.ceil((repair?12:5)+u.wear*(repair?.3:.15))
   if(state.cash<cost)return false
   syncRoster(line,state.day);const target=line.units.find(x=>x.number===number)
-  target.wear=Math.max(0,target.wear-(repair?25:55));target.failedUntil=0;target.maintenanceUntil=state.day+(repair?2:1);target.lastService=state.day
+  target.wear=Math.max(0,target.wear-(repair?25:55));target.failedUntil=0;target.fault=false;target.maintenanceUntil=startDay+(repair?2:1);target.lastService=state.day;target.serviceDepot=depot?.id??'';unitEvent(target,state.day,repair?'repair':'maintenance',cost)
   state.cash-=cost;syncCondition(line,state.day);return cost
 }
 export function advanceUnits(state,line,result,km){
-  const units=syncRoster(line,state.day),ready=units.filter(u=>u.failedUntil<=state.day&&u.maintenanceUntil<=state.day).sort((a,b)=>Number(a.reserve)-Number(b.reserve)||a.km-b.km||a.number-b.number)
+  const units=syncRoster(line,state.day),ready=units.filter(u=>unitReady(u,state.day)).sort((a,b)=>Number(a.reserve)-Number(b.reserve)||a.km-b.km||a.number-b.number)
   const regular=ready.filter(u=>!u.reserve),reserve=ready.filter(u=>u.reserve),operated=new Set()
   for(const [i,slice] of (result?.bySlice??[]).entries()){
     if(!slice.capacity||!ready.length)continue
@@ -79,8 +89,21 @@ export function advanceUnits(state,line,result,km){
     const distance=Math.min(modes[line.mode].speed*vehicleModels[line.model].speed,km*60/Math.max(slice.interval,1)*(line.operations?.ring&&line.operations?.oneway?1:2)/n)
     for(const u of active){operated.add(u.number);u.km=Math.min(1e12,u.km+distance);u.wear=clamp(u.wear+distance*.006*suppliers[u.supplier],0,100)}
   }
-  for(const u of ready)if(operated.has(u.number)&&u.wear>25&&random(state.day,line.id+':'+u.number)<(u.wear/100)**2*.12)u.failedUntil=state.day+2+Math.floor(random(state.day+1,u.number)*3)
+  for(const u of ready)if(operated.has(u.number)&&u.wear>25&&random(state.day,line.id+':'+u.number)<(u.wear/100)**2*.12){u.fault=true;u.failedUntil=state.day+2;unitEvent(u,state.day,'fault')}
   syncCondition(line,state.day)
+}
+export function runAutoMaintenance(state,line){
+  if(!state.company.realism||!line.autoMaintenance)return []
+  syncRoster(line,state.day)
+  const results=[]
+  for(const u of roster(line,state.day).sort((a,b)=>Number(unitBroken(b,state.day))-Number(unitBroken(a,state.day))||b.wear-a.wear)){
+    const repair=unitBroken(u,state.day)
+    if(u.maintenanceUntil>state.day||!repair&&u.wear<line.autoMaintenance)continue
+    if(!repair&&availableUnits(line,state.day)<=1)continue
+    const cost=maintainUnit(state,line,u.number,repair,state.day+1)
+    if(cost)results.push({number:u.number,cost,repair})
+  }
+  return results
 }
 
 const stages=[['Etüt ve proje',.08],['Kamulaştırma',.12],['Kazı / temel',.23],['Ray ve altyapı',.23],['Elektrifikasyon',.10],['İstasyon donanımı',.14],['Test ve kabul',.10]]
@@ -132,24 +155,27 @@ export function roadTraffic(state,line,hour){
   const population=(state.company.customDistricts??[]).filter(d=>d.population>0&&points.some(p=>Math.hypot((p[0]-d.lng)*Math.cos(d.lat*Math.PI/180),p[1]-d.lat)<.015)).reduce((n,d)=>n+d.population,0)
   return clamp(1+(peak-1)*factor+Math.min(.45,overlap*.035)+Math.min(.2,population/500000)*(cls==='priority'?.3:1)+(cls==='local'?.12:cls==='priority'?-.15:0),.65,2.4)
 }
-export function complaintsFor(state,projection){
+export function complaintsFor(state,projection,limit=50){
   const reports=[]
   const push=(kind,target,label,count)=>{const n=Math.round(count);if(n>0)reports.push({kind,target,label,count:n})}
-  for(const l of state.lines){const r=projection.results[l.id];if(!r)continue
+  for(const l of state.lines){const r=projection.results[l.id];if(l.readyAt<=state.day&&l.fleet>0&&(!r||!r.capacity))push('suspension',l.id,l.name,l.stops.length*3)
+    push('breakdown',l.id,l.name,roster(l,state.day).filter(u=>unitBroken(u,state.day)).length*8)
+    if(!r)continue
     push('crowding',l.id,l.name,Math.max(0,r.boards-r.served)*.035)
     push('waiting',l.id,l.name,r.bySlice.reduce((n,s)=>n+(s.interval>15&&s.capacity>0?s.served*(s.interval-15)/600:0),0))
-    push('breakdown',l.id,l.name,roster(l,state.day).filter(u=>u.failedUntil>state.day).length*8)
     if(state.company.realism)push('cleaning',l.id,l.name,Math.max(0,l.fleet-state.company.staff.cleaning/Math.max(1,state.lines.length)*5)*2)
   }
   for(const s of state.stations){const load=projection.stops[s.id]??0;if((s.facility?.accessibility??0)<1)push('access',s.id,s.name,load*.0015);if(state.company.realism&&state.company.staff.security*5<state.stations.length)push('security',s.id,s.name,load*.001)}
   for(const d of projection.districts??[])if(!d.stop)push('coverage',d.name,d.name,d.weight*.6)
-  return reports.sort((a,b)=>b.count-a.count).slice(0,50)
+  return reports.sort((a,b)=>b.count-a.count).slice(0,limit)
 }
 export function settleComplaints(state,projection){
-  const c=state.company,old=c.complaints??[],current=complaintsFor(state,projection),active=new Set(current.map(x=>x.kind+'|'+x.target))
+  const c=state.company,old=c.complaints??[],current=complaintsFor(state,projection,Infinity),active=new Set(current.map(x=>x.kind+'|'+x.target))
   for(const x of old)if(x.status==='open'&&!active.has(x.kind+'|'+x.target)){x.status='resolved';x.closedDay=state.day}
-  for(const x of current){let row=old.find(o=>o.status==='open'&&o.kind===x.kind&&o.target===x.target);if(row){row.count=x.count;row.lastDay=state.day;row.label=x.label}else old.push({...x,id:Math.max(0,...old.map(o=>o.id))+1,firstDay:state.day,lastDay:state.day,status:'open',closedDay:0})}
-  c.complaints=old.slice(-200)
+  const open=old.filter(x=>x.status==='open'),indexed=new Map(open.map(x=>[x.kind+'|'+x.target,x]))
+  let next=Math.max(0,...old.map(x=>x.id))+1
+  for(const x of current){const row=indexed.get(x.kind+'|'+x.target);if(row){row.count=x.count;row.lastDay=state.day;row.label=x.label}else if(open.length<200)open.push({...x,id:next++,firstDay:state.day,lastDay:state.day,status:'open',closedDay:0})}
+  c.complaints=[...old.filter(x=>x.status==='resolved').slice(-Math.max(0,200-open.length)),...open].slice(-200)
   const total=current.reduce((n,x)=>n+x.count,0)
   if(c.realism&&projection.riders>0)c.reputation=clamp(c.reputation-Math.min(4,total/Math.max(1,projection.riders)*100),0,100)
 }
@@ -181,8 +207,10 @@ export function simplifyRoute(data,bounds){
   return chosen.map(i=>p[i])
 }
 export function validUnitDetails(line,day){
+  if(line.autoMaintenance!==undefined&&line.autoMaintenance!==0&&!integer(line.autoMaintenance,30,95))return false
   if(line.units!==undefined&&(!Array.isArray(line.units)||line.units.length!==line.fleet+(line.operations?.spare??0)||new Set(line.units.map(u=>u?.number)).size!==line.units.length||!line.units.every(u=>record(u)&&integer(u.number,1,1e9)&&typeof u.reserve==='boolean'&&finite(u.wear,0,100)&&finite(u.km,0,1e12)&&Object.hasOwn(suppliers,u.supplier)&&integer(u.acquired,1,day)&&integer(u.lastService,1,day)&&integer(u.failedUntil,0,1e8+1000)&&integer(u.maintenanceUntil,0,1e8+1000))||line.units.filter(u=>!u.reserve).length!==line.fleet))return false
   if(line.nextUnit!==undefined&&(!integer(line.nextUnit,1,1e9)||line.nextUnit<=Math.max(0,...(line.units??[]).map(u=>u.number))))return false
+  if((line.units??[]).some(u=>u.fault!==undefined&&typeof u.fault!=='boolean'||u.serviceDepot!==undefined&&(typeof u.serviceDepot!=='string'||u.serviceDepot.length>48)||u.events!==undefined&&(!Array.isArray(u.events)||u.events.length>12||!u.events.every(e=>record(e)&&integer(e.day,1,day)&&['fault','maintenance','repair'].includes(e.kind)&&finite(e.cost,0,1e12)))))return false
   if(line.shiftLimit!==undefined&&(!Array.isArray(line.shiftLimit)||line.shiftLimit.length!==3||!line.shiftLimit.every(n=>integer(n,0,40))))return false
   if(line.roadClass!==undefined&&!Object.hasOwn(ROAD_CLASSES,line.roadClass))return false
   const j=line.construction

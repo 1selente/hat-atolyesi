@@ -33,3 +33,12 @@ test('broken new worker installation fails without deleting the previous working
   const h=harness();await h.cacheStorage.open('hat-atolyesi-shell-v3');h.responses.delete(h.scope+'assets/worker-abc.js')
   await assert.rejects(h.lifecycle('install'));assert.equal(h.flags().skipped,false);assert.ok(h.stores.has('hat-atolyesi-shell-v3'))
 })
+test('online navigation cannot replace the coherent offline shell with a partially deployed release',async()=>{
+  const h=harness();const previous=h.responses.get(h.scope)
+  await h.lifecycle('install');await h.lifecycle('activate')
+  const next='<script src="./assets/new-version.js"></script>'
+  h.responses.set(h.scope,next)
+  assert.equal(await (await h.handle(h.scope,'navigate')).text(),next)
+  h.offline()
+  assert.equal(await (await h.handle(h.scope,'navigate')).text(),previous)
+})

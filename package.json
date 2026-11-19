@@ -1,6 +1,6 @@
 {
   "name": "hat-atolyesi",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Gerçek şehir haritalarında toplu taşıma tasarım ve işletme oyunu",
   "scripts": {
     "test": "node --test",
