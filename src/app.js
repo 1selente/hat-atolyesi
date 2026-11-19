@@ -1,7 +1,7 @@
-import { cities, goals, modes } from './cities.js'
+import { accessibleColors, availableDistricts, cities, corridors, goals, modes, newlyOpenedDistricts, vehicleModels } from './cities.js'
 import {
   DEPOT_COST, LOAN, LOAN_TOTAL, active, buildLine, closestDistrict, distance, estimate,
-  finishDay, newGame, parseSave, projectDay, rewardGoals, service,
+  finishDay, newGame, parseSave, projectDay, rewardGoals, service, vehiclePrice,
 } from './model.js'
 import { makeMap } from './map.js'
 import './style.css'
@@ -55,11 +55,17 @@ let city = read('hat-atolyesi:city')
 if (!Object.hasOwn(cities, city)) city = 'istanbul'
 let state = load(city)
 let projection
+const emptyProjection = () => ({riders:0,coverage:0,income:0,expense:0,rating:null,demand:0,results:{},stops:{},districts:[],bySlice:[]})
+let pending = false, revision = 0, queued = null, busy = false
+let worker
+try { worker = new Worker(new URL('./worker.js',import.meta.url),{type:'module'}) } catch { /* local fallback */ }
 let tab = 'lines'
 let selected = state.lines[0]?.id
 let draft = null
 let placingDepot = false
 let speed = 0
+let lastSpeed = 1
+let theme
 let baseWarning = ''
 const map = makeMap($('map'), city, onMapClick, (message) => {
   baseWarning = message
@@ -85,14 +91,22 @@ function clock() {
   const twoDigits = (value) => String(value).padStart(2, '0')
   $('day').textContent = `Gün ${number.format(state.day)}`
   $('time').textContent = `${twoDigits(Math.floor(rounded / 60))}:${twoDigits(rounded % 60)}`
+  const next = state.settings.theme === 'auto' ? state.minute >= 1200 ? 'dark' : 'light' : state.settings.theme
+  if (next !== theme) {
+    theme = next
+    document.documentElement.dataset.theme = theme
+    map.setTheme?.(theme)
+  }
 }
 
 function updateOverview() {
   $('city').value = state.city
   $('city-title').textContent = cities[state.city].name
+  $('city-population').textContent = `${number.format(cities[state.city].population)} il nüfusu · TÜİK 2025`
   $('cash').textContent = money(state.cash)
-  $('riders').textContent = number.format(projection.riders)
-  $('coverage').textContent = `%${projection.coverage}`
+  $('riders').textContent = pending ? 'Hesaplanıyor…' : number.format(projection.riders)
+  $('coverage').textContent = pending ? '—' : `%${projection.coverage}`
+  $('skip').disabled = pending
   clock()
   document.querySelectorAll('[data-speed]').forEach((el) => el.setAttribute('aria-pressed', Number(el.dataset.speed) === speed))
   document.querySelectorAll('[data-tab]').forEach((el) => el.setAttribute('aria-pressed', el.dataset.tab === tab))
@@ -111,27 +125,66 @@ function mapBanner() {
 function syncMap() {
   mapBanner()
   map.render(state, {
-    draft, selected, showDemand: $('demand').checked,
+    draft, selected, showDemand: $('demand').checked, heat:$('heat').checked, walk:$('walk').checked, reference:$('reference').checked,
+    projection, accessible:state.settings.accessible,
     mode: draft ? 'draw' : placingDepot ? 'depot' : '',
   })
+  $('heat-legend').hidden = !$('heat').checked
 }
 
-function update({ save = false } = {}) {
-  const awarded = rewardGoals(state)
+function receiveProjection(result, token) {
+  if (token !== revision) return
+  projection = result
+  pending = false
+  const awarded = rewardGoals(state, projection)
   if (awarded.length) notify(awarded.map((goal) => `${goal.label} · +${money(goal.reward)}`).join(' / '))
-  projection = projectDay(state)
+  updateOverview()
+  if (!panel.contains(document.activeElement) || !document.activeElement.matches('input,select,textarea')) renderPanel()
+  syncMap()
+  if (awarded.length) persist()
+}
+
+function sendProjection() {
+  if (busy || !queued) return
+  const job = queued; queued = null
+  if (!worker) { receiveProjection(projectDay(job.state), job.revision); return }
+  busy = true
+  worker.postMessage(job)
+}
+if (worker) {
+  worker.onmessage = ({data}) => {
+    busy = false
+    if (data.error && data.revision === revision) {
+      worker.terminate(); worker = null
+      receiveProjection(projectDay(state),revision)
+    } else if (data.projection) receiveProjection(data.projection,data.revision)
+    sendProjection()
+  }
+  worker.onerror = () => {
+    worker?.terminate(); worker=null; busy=false; queued=null
+    receiveProjection(projectDay(state),revision)
+  }
+}
+
+function update({ save = false, calculate = save || !projection } = {}) {
+  projection ??= emptyProjection()
+  if (calculate) {
+    pending = true
+    queued = {revision:++revision,state:structuredClone(state)}
+  }
   updateOverview()
   renderPanel()
   syncMap()
   if (save) persist()
+  if (calculate) sendProjection()
 }
 
 const button = (action, label, options = '') =>
   `<button type="button" data-action="${action}" ${options}>${label}</button>`
 
 function districtPicker(actionLabel) {
-  const points = cities[state.city].districts.map(([name, , , weight], index) =>
-    `<option value="district:${index}">${html(name)} · talep ${weight}/10</option>`)
+  const points = availableDistricts(state.city,state.day).map(d=>
+    `<option value="district:${cities[state.city].districts.indexOf(d)}">${html(d[0])} · talep ${d[3]}/10</option>`)
   const existing = draft ? state.stations.filter((p) => !draft.stops.some((s) => s.id === p.id)
     && !(draft.extension && currentLine().stops.includes(p.id)))
     .map((s) => `<option value="station:${s.id}">${html(s.name)} · aktarma</option>`) : []
@@ -146,6 +199,15 @@ function describeLine(line) {
   return line.fleet ? 'Seferde' : 'Araç bekliyor'
 }
 
+const lineColor = l => state.settings.accessible ? accessibleColors[(l.number-1)%accessibleColors.length] : l.color
+function hourlyChart(forecast) {
+  if (!forecast?.bySlice?.length) return ''
+  const max = Math.max(1,...forecast.bySlice.map(h=>h.boards/Math.max(1,h.capacity)))
+  return `<div class="hourly"><div class="row spread"><strong>Saatlik doluluk</strong><span class="hint">06 – 24</span></div><div class="hour-bars" aria-label="Saatlik yolcu talebi ve kapasite oranı">${forecast.bySlice.map(h=>{
+    const load=h.boards/Math.max(1,h.capacity); return `<div class="hour-column" title="${h.hour}:00 · %${Math.round(load*100)}"><i style="height:${Math.max(3,load/max*100)}%;background:${load>1?'#c33b34':load>.7?'#db9b24':'#249b75'}"></i></div>`
+  }).join('')}</div><div class="row spread hint"><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div></div>`
+}
+
 function currentLine() {
   return state.lines.find((line) => line.id === selected)
 }
@@ -155,7 +217,8 @@ function renderLine(line) {
   const st = new Map(state.stations.map((s) => [s.id, s]))
   const specs = service(line, st)
   const forecast = projection.results[line.id]
-  const canBuy = line.fleet < 40 && state.cash >= mode.vehicle
+  const price = vehiclePrice(line)
+  const canBuy = line.fleet < 40 && state.cash >= price
   return `<section class="stack section">
     <form class="row" data-form="rename">
       <label class="field" style="flex:1">Hat adı<input name="name" maxlength="32" required value="${html(line.name)}"></label>
@@ -167,19 +230,24 @@ function renderLine(line) {
       <div><dt>Uzunluk</dt><dd>${decimal.format(specs.km)} km</dd></div>
       <div><dt>Araç</dt><dd>${line.fleet}</dd></div>
       <div><dt>Gerçek sıklık</dt><dd>${forecast ? `${decimal.format(specs.interval)} dk` : '—'}</dd></div>
-      <div><dt>Tahmini doluluk</dt><dd>${forecast ? `%${Math.min(100, Math.round(forecast.boards / forecast.capacity * 100))}` : '—'}</dd></div>
+      <div><dt>Tahmini doluluk</dt><dd>${forecast ? `%${Math.round(forecast.boards / forecast.capacity * 100)}` : '—'}</dd></div>
+      <div><dt>Günlük biniş</dt><dd>${forecast ? number.format(Math.round(forecast.served)) : '—'}</dd></div>
+      <div><dt>Pik sıklığı</dt><dd>${forecast ? `${decimal.format(forecast.bySlice.find(h=>h.hour===8).interval)} dk` : '—'}</dd></div>
     </dl>
+    ${hourlyChart(forecast)}
+    <label class="field">Araç modeli ${line.fleet ? '(değiştirmek için filoyu sat)' : ''}<select id="vehicle-model" ${disabled(line.fleet>0)}>${Object.entries(vehicleModels).map(([id,m])=>`<option value="${id}" ${line.model===id?'selected':''}>${m.name} · kapasite %${Math.round(m.capacity*100)}</option>`).join('')}</select></label>
     <label class="field">Hedef sefer aralığı
       <select id="headway">${Array.from({ length: 29 }, (_, i) => i + 2)
         .map((n) => `<option value="${n}" ${line.headway === n ? 'selected' : ''}>${n} dakika</option>`).join('')}</select>
     </label>
+    <label class="field">Pik saat sefer aralığı (07–10 / 16–19)<select id="peak-headway">${Array.from({length:29},(_,i)=>i+2).map(n=>`<option value="${n}" ${line.peakHeadway===n?'selected':''}>${n} dakika</option>`).join('')}</select></label>
     <div class="row wrap">
-      ${button('buy', `Araç al · ${money(mode.vehicle)}`, `class="primary" ${disabled(!canBuy)}`)}
+      ${button('buy', `Araç al · ${money(price)}`, `class="primary" ${disabled(!canBuy)}`)}
       ${button('sell', 'Araç sat', disabled(!line.fleet))}
       ${button('extend', 'Hattı uzat', disabled(line.stops.length >= (mode.maxStops ?? 24)))}
     </div>
     <ol class="stop-list" aria-label="Hat durakları">${line.stops.map((id, i) =>
-      `<li><span class="hint">${i + 1}.</span> ${html(st.get(id).name)}${state.lines.filter((l) => l.stops.includes(id)).length > 1 ? ' <span class="hint">· aktarma</span>' : ''}</li>`).join('')}</ol>
+      `<li><span class="hint">${i + 1}.</span> ${html(st.get(id).name)}${state.lines.filter((l) => l.stops.includes(id)).length > 1 ? ' <span class="hint">· aktarma</span>' : ''}${button('station-info','Bilgi',`data-station="${id}" aria-label="${html(st.get(id).name)} durağı bilgisi"`)}</li>`).join('')}</ol>
   </section>`
 }
 
@@ -223,8 +291,10 @@ function renderPanel() {
   if (tab === 'finance') {
     panel.innerHTML = `<section class="stack">
       <h2 class="heading">İşletme hesabı</h2>
+      <label class="field">Bilet ücreti (oyun TL)<select id="fare">${[10,20,40,60,80,100,120,160,200,250,300].map(f=>`<option value="${f}" ${state.fare===f?'selected':''}>₺${f}</option>`).join('')}</select></label>
       <dl class="readings">
         <div><dt>Günlük bilet geliri</dt><dd>${money(projection.income)}</dd></div>
+        <div><dt>Günlük mağaza geliri</dt><dd>${money(projection.retailIncome??0)}</dd></div>
         <div><dt>Günlük işletme gideri</dt><dd>${money(projection.expense)}</dd></div>
         <div><dt>Günlük belediye desteği</dt><dd>${money(12)}</dd></div>
         <div><dt>Kalan kredi borcu</dt><dd>${money(state.loan)}</dd></div>
@@ -233,6 +303,7 @@ function renderPanel() {
       </dl>
       <p class="hint">${money(LOAN)} kredi için toplam ${money(LOAN_TOTAL)} geri ödeme yapılır. Tahsilat günde ${money(30)}.</p>
       ${button('loan', 'Kredi al', disabled(state.loan > 0))}
+      <p class="hint">Bilet fiyatı arttığında talep azalır. Giderler araç modeline ve hat uzunluğuna bağlıdır. Fiyatlar gerçek ücretler değil, oyun dengesi içindir.</p>
       ${state.history.length ? `<table class="history"><thead><tr><th>Gün</th><th>Yolcu</th><th>Kapanış bakiyesi</th></tr></thead><tbody>
         ${[...state.history].reverse().map((d) => `<tr><td>${number.format(d.day)}</td><td>${number.format(d.riders)}</td><td>${money(d.cash)}</td></tr>`).join('')}
       </tbody></table>` : '<p class="hint">İlk gün kapandığında burada görünecek.</p>'}
@@ -256,8 +327,10 @@ function renderPanel() {
     <div class="row spread"><h2 class="heading">Ağ planı</h2><span class="hint">${state.depots.length} depo · ${state.stations.length} durak</span></div>
     <div class="row wrap">${button('new-line', 'Yeni hat', 'class="primary"')}
       ${button('depot', 'Depo kur', disabled(state.cash < DEPOT_COST || state.depots.length >= 100))}</div>
+    <label class="field">Örnek gerçek koridorlardan planla<select id="corridor"><option value="">Bir koridor seç…</option>${(corridors[state.city]??[]).map(([name],i)=>`<option value="${i}">${html(name)}</option>`).join('')}</select></label>
+    <p class="hint">Şablonlar yaklaşık gerçek güzergâh referanslarıdır; resmi durak veya tarife verisi değildir.</p>
     ${state.lines.length ? `<ul class="line-list">${state.lines.map((l) =>
-      `<li>${button('select-line', `<span class="line-chip" style="background:${l.color}"></span><strong>${html(l.name)}</strong><span class="hint">${describeLine(l)}</span>`,
+      `<li>${button('select-line', `<span class="line-chip" style="background:${lineColor(l)}"></span><strong>${html(l.name)}</strong><span class="hint">${describeLine(l)}</span>`,
         `class="line-choice" data-line="${l.id}" ${pressed(l.id === selected)}`)}</li>`).join('')}</ul>`
     : `<div class="empty stack"><h3 class="heading">İlk koridorunu aç</h3>
       <p class="hint">Depo kur, en az iki talep merkezini bağla ve bir araç ekle. İnşaat tamamlanınca hat seferlere başlar.</p></div>`}
@@ -272,11 +345,40 @@ function hasDepot(stops) {
 }
 
 function startDraft(extension = null) {
-  if (!extension && state.lines.length >= 100) return notify('Hat sınırına ulaştın.')
+  if (!extension && state.lines.length >= 100) {notify('Hat sınırına ulaştın.');return false}
   placingDepot = false
+  tab = 'lines'
+  if(extension) selected=extension.id
   draft = { mode: extension?.mode ?? 'metro', depth: extension?.depth ?? 20, stops: [], extension: extension?.id }
   if (extension) draft.stops.push(state.stations.find((s) => s.id === extension.stops.at(-1)))
   update()
+  return true
+}
+
+function stationCard(id) {
+  const station=state.stations.find(s=>s.id===id)
+  if(!station) return
+  const lines=state.lines.filter(l=>l.stops.includes(id))
+  const content=document.createElement('div')
+  content.className='stack station-card'
+  content.innerHTML=`<h3>${html(station.name)}</h3><span class="hint">Günlük biniş: ${number.format(Math.round(projection.stops[id]??0))}</span><div class="row wrap">${lines.map(l=>`<button data-line="${l.id}"><span class="line-chip" style="display:inline-block;background:${lineColor(l)}"></span> ${html(l.name)}</button>`).join('')}</div><button data-station-action="extend">Buradan hat planla</button><button data-station-action="shop" ${disabled(station.shop||state.cash<50)}>${station.shop?'Mağaza kirada':'Mağaza kur · ₺50 Mn'}</button><button data-station-action="remove">Durağı kaldır</button>`
+  content.addEventListener('click',e=>{
+    const btn=e.target.closest('button'); if(!btn)return
+    map.closeStation?.(); if(dialog.open)dialog.close()
+    if(btn.dataset.line){selected=btn.dataset.line;tab='lines';update();return}
+    if(btn.dataset.stationAction==='extend'){
+      const terminal=lines.find(l=>l.stops.at(-1)===id && l.stops.length<(modes[l.mode].maxStops??24))
+      if(startDraft(terminal??null) && !terminal){draft.stops.push(station);update()} return
+    }
+    if(btn.dataset.stationAction==='shop'&&!station.shop&&state.cash>=50){station.shop=true;state.cash-=50;update({save:true});notify('Mağaza işletmeye hazır.');return}
+    if(btn.dataset.stationAction==='remove'){
+      const byId=new Map(state.stations.map(s=>[s.id,s]))
+      if(lines.some(l=>{const ids=l.stops.filter(s=>s!==id);return ids.length<2||ids.some((s,i)=>i&&distance(byId.get(s).position,byId.get(ids[i-1]).position)<modes[l.mode].spacing)})) return notify('Hat bütünlüğü nedeniyle bu durak kaldırılamaz.')
+      if(!window.confirm(`${station.name} durağı tüm bağlı hatlardan kaldırılsın mı?`))return
+      lines.forEach(l=>l.stops=l.stops.filter(s=>s!==id));state.stations=state.stations.filter(s=>s.id!==id);update({save:true})
+    }
+  })
+  if(!map.showStation?.(station.position,content)) { openDialog('Durak bilgisi','');$('dialog-body').append(content) }
 }
 
 function onMapClick(position, stationId, districtName, lineId) {
@@ -284,12 +386,12 @@ function onMapClick(position, stationId, districtName, lineId) {
     const station = state.stations.find((s) => s.id === stationId)
     const district = cities[state.city].districts.find(([name]) => name === districtName)
     place(station?.position ?? district?.slice(1, 3) ?? position, station, district?.[0])
+  } else if (stationId) {
+    stationCard(stationId)
   } else if (lineId) {
     selected = lineId
     tab = 'lines'
     update()
-  } else if (stationId) {
-    notify(state.stations.find((s) => s.id === stationId)?.name ?? 'Durak')
   } else if (districtName) {
     notify(districtName)
   }
@@ -331,6 +433,7 @@ function finishConstruction() {
   if (state.stations.length + draft.stops.filter((s) => !s.id).length > 2000) return notify('Şehir durak sınırına ulaştı.')
   const line = buildLine(state, draft.stops, draft.mode, draft.depth, draft.extension ? currentLine() : null)
   if (!line) return
+  if (draft.name && !draft.extension) line.name = draft.name.slice(0,32)
   selected = line.id
   draft = null
   notify(`${line.name} inşaata girdi. ${line.readyAt}. gün açılacak.`)
@@ -338,15 +441,19 @@ function finishConstruction() {
 }
 
 function advanceDay() {
+  if (pending) return
   const opens = state.lines.filter((l) => l.readyAt === state.day + 1)
   finishDay(state, projection)
   if (opens.length) notify(`${opens.map((l) => l.name).join(', ')} inşaatı tamamlandı.`)
+  else if (newlyOpenedDistricts(state.city,state.day).length) notify(`Yeni talep bölgeleri açıldı: ${newlyOpenedDistricts(state.city,state.day).join(', ')}`)
+  else if ((state.day-1)%30===0) notify('Şehir büyüdü! Bağlantılı bölgelerde talep daha hızlı arttı.')
   update({ save: true })
 }
 
 function switchCity(nextCity, loadedState) {
   persist()
   state = loadedState ?? load(nextCity)
+  projection = emptyProjection()
   selected = state.lines[0]?.id
   draft = null
   placingDepot = false
@@ -364,11 +471,12 @@ const actions = {
   undo() { draft.stops.pop(); update() },
   build: finishConstruction,
   'select-line'(el) { selected = el.dataset.line; update() },
+  'station-info'(el) { stationCard(el.dataset.station) },
   buy() {
     const line = currentLine()
-    const mode = modes[line.mode]
-    if (line.fleet >= 40 || state.cash < mode.vehicle) return
-    state.cash -= mode.vehicle
+    const price = vehiclePrice(line)
+    if (line.fleet >= 40 || state.cash < price) return
+    state.cash -= price
     line.fleet++
     update({ save: true })
   },
@@ -376,7 +484,7 @@ const actions = {
     const line = currentLine()
     if (!line.fleet) return
     line.fleet--
-    state.cash += Math.floor(modes[line.mode].vehicle * .52)
+    state.cash += Math.floor(vehiclePrice(line) * .52)
     update({ save: true })
   },
   loan() {
@@ -430,6 +538,24 @@ panel.addEventListener('change', (event) => {
     currentLine().headway = Number(value)
     update({ save: true })
   }
+  if(id==='peak-headway'){currentLine().peakHeadway=Number(value);update({save:true})}
+  if(id==='vehicle-model' && currentLine().fleet===0){currentLine().model=value;update({save:true})}
+  if(id==='fare'){state.fare=Number(value);update({save:true})}
+  if(id==='corridor' && value!=='') {
+    const [name,mode,...names]=corridors[state.city][Number(value)]
+    if(state.lines.length>=100)return notify('Hat sınırına ulaştın.')
+    startDraft(); draft.mode=mode
+    for(const name of names){
+      const point=cities[state.city].districts.find(d=>d[0]===name)
+      if(!point) continue
+      const pos=point.slice(1,3)
+      if(draft.stops.length && distance(draft.stops.at(-1).position,pos)<modes[mode].spacing) continue
+      const old=state.stations.find(s=>distance(s.position,pos)<.08)
+      if(!old || !draft.stops.some(s=>s.id===old.id)) draft.stops.push(old??{name,position:pos})
+    }
+    draft.name=name
+    update()
+  }
 })
 
 function openDialog(title, content) {
@@ -446,7 +572,16 @@ $('help').addEventListener('click', () => openDialog('Nasıl oynanır?', `<div c
     <li><strong>Günü ilerlet.</strong> Süreyi hızlandır veya Günü bitir düğmesini kullan. Bütçe ve günlük kayıt her gün kapanışta güncellenir.</li>
   </ol>
   <p class="hint">Hedefler ilerlemene ödül verir. Maliye sekmesi talebi, geliri, gideri ve krediyi gösterir.</p>
+  <p><strong>Kısayollar:</strong> Boşluk: duraklat/devam · 1–4: hız · N: hat · D: depo · Esc: iptal · Shift+G: günü bitir.</p>
   </div>`))
+
+$('settings').addEventListener('click',()=>openDialog('Görünüm ayarları',`<div class="stack"><label class="field">Tema<select id="theme-select">${[['auto','Otomatik (20:00 sonrası koyu)'],['light','Açık'],['dark','Koyu']].map(([id,name])=>`<option value="${id}" ${state.settings.theme===id?'selected':''}>${name}</option>`).join('')}</select></label><label class="row"><input type="checkbox" id="accessible-select" ${state.settings.accessible?'checked':''}> Renk körü dostu hatlar</label><p class="hint">Ayarlar bu şehir için otomatik kaydedilir.</p></div>`))
+$('dialog-body').addEventListener('change',e=>{
+  if(e.target.id==='theme-select')state.settings.theme=e.target.value
+  else if(e.target.id==='accessible-select')state.settings.accessible=e.target.checked
+  else return
+  persist();update()
+})
 
 $('save').addEventListener('click', () => openDialog('Oyun kaydı', `<div class="stack">
   <p>${storageWorks ? 'Her şehir bu tarayıcıda ayrı ve otomatik kaydedilir.' : 'Tarayıcı depolaması kullanılamıyor. Oyunu saklamak için dosyayı indir.'}</p>
@@ -481,10 +616,8 @@ $('import').addEventListener('change', async (event) => {
   }
 })
 
-document.querySelectorAll('[data-speed]').forEach((el) => el.addEventListener('click', () => {
-  speed = Number(el.dataset.speed)
-  updateOverview()
-}))
+function setSpeed(value){speed=value;if(speed)lastSpeed=speed;updateOverview()}
+document.querySelectorAll('[data-speed]').forEach((el) => el.addEventListener('click', () => setSpeed(Number(el.dataset.speed))))
 document.querySelectorAll('[data-tab]').forEach((el) => el.addEventListener('click', () => {
   tab = el.dataset.tab
   updateOverview()
@@ -492,16 +625,36 @@ document.querySelectorAll('[data-tab]').forEach((el) => el.addEventListener('cli
 }))
 $('city').addEventListener('change', (event) => switchCity(event.target.value))
 $('demand').addEventListener('change', syncMap)
+$('heat').addEventListener('change',syncMap)
+$('walk').addEventListener('change',syncMap)
+$('reference').addEventListener('change',syncMap)
 $('recenter').addEventListener('click', () => map.recenter())
 $('skip').addEventListener('click', advanceDay)
 window.addEventListener('pagehide', persist)
 
-setInterval(() => {
-  if (!speed || document.hidden || dialog.open) return
-  state.minute += speed * 4
-  if (state.minute >= 1440) advanceDay()
-  else clock()
-  map.animate(state.minute)
-}, 250)
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey||e.altKey||e.metaKey||dialog.open||e.target.matches('input,select,textarea,button,[contenteditable]'))return
+  const k=e.key.toLowerCase()
+  if(k===' '){e.preventDefault();setSpeed(speed?0:lastSpeed)}
+  else if(['1','2','3','4'].includes(k)){setSpeed([0,1,4,12][Number(k)-1])}
+  else if(k==='n')actions['new-line']()
+  else if(k==='d'&&state.cash>=DEPOT_COST){tab='lines';actions.depot()}
+  else if(k==='escape'&&(draft||placingDepot))actions.cancel()
+  else if(k==='g'&&e.shiftKey)advanceDay()
+})
+
+let previousFrame=performance.now(), lastPaint=0, lastClock=0
+const reduced=matchMedia('(prefers-reduced-motion: reduce)')
+function frame(now){
+  const delta=Math.min(100,now-previousFrame);previousFrame=now
+  if(speed&&!document.hidden&&!dialog.open){
+    state.minute=Math.min(1439.999,state.minute+speed*16*delta/1000)
+    if(state.minute>=1439.999)advanceDay()
+    if(now-lastClock>150){clock();lastClock=now}
+    if(now-lastPaint>(reduced.matches?1000:state.lines.length>50?65:state.lines.length>20?32:15)){map.animate(state.minute);lastPaint=now}
+  }
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
 
 update()

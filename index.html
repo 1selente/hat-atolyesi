@@ -3,11 +3,21 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="İstanbul, Ankara ve İzmir'de toplu taşıma ağı tasarla ve işlet.">
+    <meta name="description" content="Türkiye'nin sekiz şehrinde toplu taşıma ağı tasarla ve işlet.">
     <meta name="theme-color" content="#18282a">
     <title>Hat Atölyesi</title>
   </head>
   <body>
+    <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true" class="icon-library">
+      <symbol id="i-lines" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="8" cy="5" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="19" r="2"/></symbol>
+      <symbol id="i-goals" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+      <symbol id="i-finance" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18m-6 4h3"/></symbol>
+      <symbol id="i-map" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/></symbol>
+      <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 4 3c-1 .5-1 1.5-1 2m0 3h.01"/></symbol>
+      <symbol id="i-save" viewBox="0 0 24 24"><path d="M4 3h13l3 3v15H4zM8 3v7h8V3m-8 18v-7h8v7"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+    </svg>
     <div class="app">
       <header class="bar">
         <a class="brand" href="./" aria-label="Hat Atölyesi ana sayfa">
@@ -17,19 +27,20 @@
         <div class="header-controls">
           <label class="city-label" for="city">Şehir</label>
           <select id="city" aria-label="Şehir"></select>
-          <button id="help" class="quiet" type="button">Yardım</button>
-          <button id="save" class="quiet" type="button">Kayıt</button>
+          <button id="help" class="quiet" type="button"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg> Yardım</button>
+          <button id="save" class="quiet" type="button"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg> Kayıt</button>
+          <button id="settings" class="quiet" type="button" aria-label="Ayarlar"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></button>
         </div>
       </header>
       <main>
         <section class="overview" aria-label="İşletme özeti">
-          <div class="overview-title"><h1 id="city-title"></h1><p>Ağ işletim masası</p></div>
+          <div class="overview-title"><h1 id="city-title"></h1><p id="city-population">Ağ işletim masası</p></div>
           <div class="metric"><span>Bütçe</span><strong id="cash"></strong></div>
           <div class="metric"><span>Günlük yolcu tahmini</span><strong id="riders"></strong></div>
           <div class="metric"><span>Talep kapsaması</span><strong id="coverage"></strong></div>
           <div class="clock"><div><span id="day"></span><strong id="time"></strong></div>
             <div class="speeds" role="group" aria-label="Simülasyon hızı">
-              <button type="button" data-speed="0" aria-label="Duraklat">Ⅱ</button>
+              <button type="button" data-speed="0" aria-label="Duraklat"><svg class="icon" aria-hidden="true"><use href="#i-pause"/></svg></button>
               <button type="button" data-speed="1">1×</button>
               <button type="button" data-speed="4">4×</button>
               <button type="button" data-speed="12">12×</button>
@@ -42,16 +53,19 @@
             <div id="map"></div>
             <div class="map-toolbar">
               <label><input id="demand" type="checkbox" checked> Talep noktaları</label>
-              <button id="recenter" type="button">Merkezle</button>
+              <label><input id="heat" type="checkbox"> Doluluk</label>
+              <label><input id="walk" type="checkbox"> Kapsama</label>
+              <label title="Yaklaşık mevcut güzergâh şablonları"><input id="reference" type="checkbox"> Referans hatlar</label>
+              <button id="recenter" type="button" aria-label="Haritayı merkezle"><svg class="icon" aria-hidden="true"><use href="#i-map"/></svg></button>
             </div>
             <div id="map-banner" role="status" hidden></div>
-            <div class="legend"><span class="dot"></span> Talep merkezi <span class="ring"></span> Durak</div>
+            <div class="legend"><span class="dot"></span> Talep merkezi <span class="ring"></span> Durak <span id="heat-legend" hidden><i class="gradient"></i> Düşük – yüksek</span></div>
           </section>
           <aside class="desk" aria-label="Ağ yönetimi">
             <nav class="tabs" aria-label="Ağ paneli">
-              <button type="button" data-tab="lines">Hatlar</button>
-              <button type="button" data-tab="goals">Hedefler</button>
-              <button type="button" data-tab="finance">Maliye</button>
+              <button type="button" data-tab="lines"><svg class="icon" aria-hidden="true"><use href="#i-lines"/></svg> Hatlar</button>
+              <button type="button" data-tab="goals"><svg class="icon" aria-hidden="true"><use href="#i-goals"/></svg> Hedefler</button>
+              <button type="button" data-tab="finance"><svg class="icon" aria-hidden="true"><use href="#i-finance"/></svg> Maliye</button>
             </nav>
             <div id="panel"></div>
           </aside>
